@@ -1,0 +1,9 @@
+{
+  "name": "zpr-schedule",
+  "private": true,
+  "version": "0.1.0",
+  "description": "제피로스 통합 일정관리 - Apps Script 소스와 파서 테스트",
+  "scripts": {
+    "test": "node --test tests/parser.test.js"
+  }
+}
