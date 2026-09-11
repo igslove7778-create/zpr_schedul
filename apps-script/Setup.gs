@@ -18,6 +18,8 @@ function onOpen() {
     .addSeparator()
     .addItem('대기 알림 지금 발송', 'sendPendingNotifications')
     .addItem('선택 행 삭제 처리 (취소 알림)', 'deleteSelectedRows')
+    .addItem('이체내역 지금 발송 (테스트)', 'sendTransfersNow')
+    .addItem('캘린더 지금 동기화', 'syncCalendarNow')
     .addToUi();
 }
 
@@ -53,15 +55,33 @@ function setup() {
   // [일정]
   var sch = ss.getSheetByName(SHEET.SCHEDULE) || ss.insertSheet(SHEET.SCHEDULE, 0);
   if (sch.getLastRow() === 0) {
-    var headers = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.ALARM, '', COL.ALL].concat(SYSTEM_COLS);
+    var headers = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.TARGET, COL.ALARM, '', COL.ALL].concat(SYSTEM_COLS);
     sch.appendRow(headers);
     sch.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#DCE6F1');
-    sch.getRange('A2:A1000').setNumberFormat('MM"월" dd"일"');
-    sch.getRange('B2:B1000').setNumberFormat('@');
-    sch.getRange('E2:E1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList([ALARM.PENDING, ALARM.SENT, ALARM.FAILED], true).build());
-    sch.setColumnWidth(3, 260);
-    sch.setColumnWidth(6, 20);
+    var hIdx = {}; headers.forEach(function (h, i) { if (h) hIdx[h] = i + 1; });
+    var blankIdx = headers.indexOf('') + 1;
+    sch.getRange(2, hIdx[COL.DATE], 999, 1).setNumberFormat('MM"월" dd"일"');
+    sch.getRange(2, hIdx[COL.TIME], 999, 1).setNumberFormat('@');
+    sch.getRange(2, hIdx[COL.ALARM], 999, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList([ALARM.PENDING, ALARM.SENT, ALARM.FAILED], true).build());
+    sch.getRange(1, hIdx[COL.TARGET]).setNote('이름을 공백이나 쉼표로 구분해서 입력하면 아래 구성원 열에 자동으로 o가 표시됩니다 (예: 김유선 성도형). "전체"라고 쓰면 전원 체크. 비워두면 체크 칸을 직접 눌러도 됩니다.');
+    sch.setColumnWidth(hIdx[COL.TITLE], 260);
+    sch.setColumnWidth(hIdx[COL.TARGET], 140);
+    sch.setColumnWidth(blankIdx, 20);
     sch.setFrozenRows(1);
+  }
+  // [이체내역]
+  var trf = ss.getSheetByName(SHEET.TRANSFER) || ss.insertSheet(SHEET.TRANSFER);
+  if (trf.getLastRow() === 0) {
+    trf.appendRow(TRANSFER_HEADERS);
+    trf.getRange(1, 1, 1, TRANSFER_HEADERS.length).setFontWeight('bold').setBackground('#DCE6F1');
+    trf.appendRow([28, '(예시) 유포리아지식산업센터', '지역농협', '3010277538481', 500000, '제주도 관리비 - 이 줄은 지우고 실제 내용을 넣으세요']);
+    trf.getRange(2, 1, 1, TRANSFER_HEADERS.length).setFontColor('#999999').setFontStyle('italic');
+    trf.getRange('A2:A500').setNumberFormat('0"일"');
+    trf.getRange('D2:D500').setNumberFormat('@');
+    trf.getRange('E2:E500').setNumberFormat('#,##0"원"');
+    trf.setColumnWidth(2, 160);
+    trf.setColumnWidth(6, 220);
+    trf.setFrozenRows(1);
   }
   syncMemberColumns();
   installTriggers_();
@@ -159,7 +179,7 @@ function processSheetRow_(sh, hm, row, editedHeader, e) {
   var s = getSchedule_(row);
   var dateCell = sh.getRange(row, hm[COL.DATE]);
   var titleCell = sh.getRange(row, hm[COL.TITLE]);
-  var rowHasData = s.date || s.title || s.time || s.memo;
+  var rowHasData = s.date || s.title || s.time || s.memo || s.target;
   if (!rowHasData) return;
 
   // 삭제 처리 (상태=삭제)
@@ -175,6 +195,12 @@ function processSheetRow_(sh, hm, row, editedHeader, e) {
   titleCell.setBackground(!s.title ? '#F8CBAD' : null);
   if (s.time) sh.getRange(row, hm[COL.TIME]).setBackground(!/^\d{1,2}:\d{2}$/.test(s.time) ? '#F8CBAD' : null);
   if (invalid) return;
+
+  // 대상자 열 반영 (편의 기능) - 새 행이거나 '대상자' 칸 자체가 수정됐을 때만 체크 칸을 새로 계산한다
+  if (hm[COL.TARGET] && (editedHeader === COL.TARGET || !s.id)) {
+    applyTargetColumn_(sh, hm, row, s);
+    s = getSchedule_(row);
+  }
 
   var settings = getSettings_();
   if (!s.id) {
@@ -195,7 +221,7 @@ function processSheetRow_(sh, hm, row, editedHeader, e) {
 
   // 기존 행 수정
   setCell_(sh, hm, row, COL.UPDATED, nowString_());
-  var watched = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.ALL].concat(getMembers_().map(function (m) { return m.name; }));
+  var watched = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.TARGET, COL.ALL].concat(getMembers_().map(function (m) { return m.name; }));
   if (s.status !== STATUS.DELETED && s.alarm === ALARM.SENT && watched.indexOf(editedHeader) >= 0) {
     var before = '';
     if (e && e.oldValue !== undefined && (editedHeader === COL.DATE || editedHeader === COL.TIME)) before = String(e.oldValue);
