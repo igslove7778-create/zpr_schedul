@@ -11,6 +11,10 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('일정관리')
     .addItem('초기 설정 (시트·트리거 생성)', 'setup')
     .addItem('구성원 열 동기화', 'syncMemberColumns')
+    .addItem('편집 감지 트리거를 내 계정으로 설치', 'installEditTrigger')
+    .addItem('이름 열 추가 (쉼표로 여러 명)', 'addNameColumns')
+    .addItem('대상자 체크 다시 맞추기 (기존 행 전체)', 'resyncTargetChecks')
+    .addItem('이름 열 인원을 구성원에 추가 + 인증코드 생성', 'addCheckColumnMembers')
     .addItem('인증코드 생성 (미연결 구성원)', 'generateAuthCodes')
     .addSeparator()
     .addItem('웹훅 등록', 'registerWebhook')
@@ -20,6 +24,8 @@ function onOpen() {
     .addItem('선택 행 삭제 처리 (취소 알림)', 'deleteSelectedRows')
     .addItem('이체내역 지금 발송 (테스트)', 'sendTransfersNow')
     .addItem('캘린더 지금 동기화', 'syncCalendarNow')
+    .addItem('구성원 캘린더 만들기·공유 (구글 계정 있는 구성원)', 'setupMemberCalendars')
+    .addItem('캘린더 자동 동기화 켜기 (10분마다, 내 계정)', 'enableCalendarSync')
     .addToUi();
 }
 
@@ -126,6 +132,48 @@ function installTriggers_() {
   if (!have.runReminders) ScriptApp.newTrigger('runReminders').timeBased().everyMinutes(10).create();
 }
 
+/**
+ * [일정] 시트 사람 체크 열(리마인드 오른쪽 헤더)에 있는 이름 중 [구성원] 시트에 없는 사람을 자동 추가한다.
+ * 권한=일반, 사용여부=Y 로 넣고, 이어서 인증코드를 발급한다. 각자 봇에 /start 후 코드를 입력하면 알림을 받기 시작한다.
+ */
+function addCheckColumnMembers() {
+  var sch = sheet_(SHEET.SCHEDULE);
+  var names = checkColumnNames_(headerMap_(sch));
+  var mem = sheet_(SHEET.MEMBER);
+  var hm = headerMap_(mem);
+  var existing = getMembers_(true).map(function (m) { return m.name; });
+  var added = [];
+  names.forEach(function (n) {
+    if (existing.indexOf(n) >= 0) return;
+    var row = new Array(Math.max(mem.getLastColumn(), MEMBER_HEADERS.length)).fill('');
+    row[hm[MEMBER_COL.NAME] - 1] = n;
+    row[hm[MEMBER_COL.ROLE] - 1] = '일반';
+    row[hm[MEMBER_COL.ACTIVE] - 1] = 'Y';
+    mem.appendRow(row);
+    added.push(n);
+  });
+  if (hm[MEMBER_COL.TG_ID]) mem.getRange(2, hm[MEMBER_COL.TG_ID], Math.max(mem.getLastRow() - 1, 1), 1).setNumberFormat('@');
+  generateAuthCodes();
+  SpreadsheetApp.getActive().toast((added.length ? '구성원 추가: ' + added.join(', ') : '새로 추가할 이름 없음') + ' / [구성원] 시트에서 각자 인증코드를 확인해 전달하세요.', '일정관리', 10);
+}
+
+/**
+ * 편집 감지(handleEdit) 트리거를 현재 계정 소유로 설치한다 (메뉴).
+ * 개인 Gmail 은 트리거 소유자 본인의 편집만 편집자 정보(e.user)가 넘어오므로,
+ * 시트를 주로 편집하는 사람이 이 메뉴를 실행해 트리거를 본인 소유로 두는 것이 좋다.
+ * 다른 계정에 같은 트리거가 남아 있으면 편집이 두 번 처리되므로, 그 계정에서는 handleEdit 트리거를 삭제해야 한다.
+ */
+function installEditTrigger() {
+  var ss = ss_();
+  var mine = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'handleEdit'; });
+  if (mine.length) { SpreadsheetApp.getActive().toast('이미 내 계정 소유의 편집 감지 트리거가 있습니다.', '일정관리', 6); return; }
+  ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
+  var me = '';
+  try { me = Session.getEffectiveUser().getEmail(); } catch (e) { /* 무시 */ }
+  log_('설정', '', CHANNEL.SHEET, me || '시스템', '성공', '편집 감지 트리거 설치');
+  SpreadsheetApp.getActive().toast('편집 감지 트리거를 ' + (me || '내 계정') + ' 소유로 설치했습니다. 다른 계정에 남은 handleEdit 트리거는 삭제하세요.', '일정관리', 10);
+}
+
 /** 텔레그램 ID 가 없는 구성원에게 6자리 인증코드 발급 (ADM-02) */
 function generateAuthCodes() {
   var sh = sheet_(SHEET.MEMBER);
@@ -201,35 +249,95 @@ function processSheetRow_(sh, hm, row, editedHeader, e) {
     applyTargetColumn_(sh, hm, row, s);
     s = getSchedule_(row);
   }
+  // '전부' 칸을 직접 체크하면 전원 표시, 해제하면 전원 해제 (그 뒤 '대상자' 텍스트대로 재표시)
+  if (editedHeader === COL.ALL) {
+    applyAllColumn_(sh, hm, row, s);
+    if (s.all && hm[COL.TARGET]) sh.getRange(row, hm[COL.TARGET]).setValue('전부').setBackground(null).clearNote();
+    s = getSchedule_(row);
+  }
+  // 사람 체크 열을 직접 체크/해제하면 '대상자' 칸에 체크된 이름을 써 준다 (반대 방향 동기화)
+  if (checkColumnNames_(hm).indexOf(editedHeader) >= 0) {
+    syncTargetFromChecks_(sh, hm, row, s);
+    s = getSchedule_(row);
+  }
 
   var settings = getSettings_();
+  var editor = getEditorName_(e); // 편집한 구성원 (이메일 대조). 못 찾으면 설정 '담당자명' 또는 첫 관리자
   if (!s.id) {
     // 신규 등록
     var id = newId_();
     setCell_(sh, hm, row, COL.ID, id);
-    setCell_(sh, hm, row, COL.REGISTRANT, s.registrant || getOperatorName_());
+    setCell_(sh, hm, row, COL.REGISTRANT, s.registrant || editor);
     setCell_(sh, hm, row, COL.CHANNEL, CHANNEL.SHEET);
     setCell_(sh, hm, row, COL.STATUS, STATUS.NORMAL);
     setCell_(sh, hm, row, COL.UPDATED, nowString_());
     if (!s.alarm) setCell_(sh, hm, row, COL.ALARM, ALARM.PENDING);
     sh.getRange(row, hm[COL.TIME]).setNumberFormat('@');
-    log_('등록', id, CHANNEL.SHEET, getOperatorName_(), '성공', s.date + ' ' + s.time + ' ' + s.title);
+    log_('등록', id, CHANNEL.SHEET, editor, '성공', s.date + ' ' + s.time + ' ' + s.title);
     s = getSchedule_(row);
-    if (settings['즉시알림'] !== 'N' && s.alarm === ALARM.PENDING) notifyImmediate_(s, null);
+    if (settings['즉시알림'] !== 'N' && s.alarm === ALARM.PENDING) notifySheetRegistered_(s);
     return;
   }
 
   // 기존 행 수정
   setCell_(sh, hm, row, COL.UPDATED, nowString_());
-  var watched = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.TARGET, COL.ALL].concat(getMembers_().map(function (m) { return m.name; }));
+  var watched = [COL.DATE, COL.TIME, COL.TITLE, COL.MEMO, COL.TARGET, COL.ALL].concat(checkColumnNames_(hm));
   if (s.status !== STATUS.DELETED && s.alarm === ALARM.SENT && watched.indexOf(editedHeader) >= 0) {
     var before = '';
     if (e && e.oldValue !== undefined && (editedHeader === COL.DATE || editedHeader === COL.TIME)) before = String(e.oldValue);
-    log_('수정', s.id, CHANNEL.SHEET, getOperatorName_(), '성공', editedHeader + ' 변경');
+    log_('수정', s.id, CHANNEL.SHEET, editor, '성공', editedHeader + ' 변경');
     notifyChanged_(s, before);
   } else if (s.alarm === ALARM.PENDING && settings['즉시알림'] !== 'N') {
-    notifyImmediate_(s, null);
+    notifySheetRegistered_(s);
   }
+}
+
+/**
+ * [일정] 시트 맨 오른쪽에 사람 체크 열을 추가한다 (메뉴). 이름을 쉼표·공백으로 여러 명 입력 가능.
+ * 이미 같은 이름의 헤더가 있으면 건너뛴다. 헤더 서식과 o/O/ㅇ/○ 드롭다운을 함께 넣는다.
+ */
+function addNameColumns() {
+  var ui = SpreadsheetApp.getUi();
+  var res = ui.prompt('이름 열 추가', '추가할 이름을 쉼표나 공백으로 구분해 입력하세요.\n예) 김유선, 성도형, 조인희', ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  var names = String(res.getResponseText() || '').split(/[,\s]+/).map(function (t) { return t.trim(); }).filter(function (t) { return t; });
+  if (!names.length) return;
+  var sh = sheet_(SHEET.SCHEDULE);
+  var hm = headerMap_(sh);
+  var added = [], skipped = [];
+  names.forEach(function (n) {
+    if (hm[n]) { skipped.push(n); return; }
+    var col = sh.getLastColumn() + 1;
+    if (col > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), col - sh.getMaxColumns());
+    sh.getRange(1, col).setValue(n).setFontWeight('bold').setBackground('#DCE6F1');
+    sh.setColumnWidth(col, 70);
+    sh.getRange(2, col, Math.max(sh.getMaxRows() - 1, 1), 1)
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['o', 'O', 'ㅇ', '○'], true).setAllowInvalid(true).build())
+      .setHorizontalAlignment('center');
+    hm = headerMap_(sh);
+    added.push(n);
+  });
+  SpreadsheetApp.getActive().toast('추가: ' + (added.join(', ') || '없음') + (skipped.length ? ' / 이미 있음: ' + skipped.join(', ') : ''), '일정관리', 8);
+}
+
+/**
+ * 기존 행 전체의 '대상자' 텍스트와 사람 체크 열을 다시 맞춘다 (메뉴).
+ * - '대상자' 텍스트가 있으면 텍스트 기준으로 체크 열을 표시
+ * - 텍스트가 없고 체크만 있으면 체크 기준으로 '대상자' 텍스트를 채움
+ * 알림은 보내지 않는다 (표시만 맞춤).
+ */
+function resyncTargetChecks() {
+  var sh = sheet_(SHEET.SCHEDULE);
+  var hm = headerMap_(sh);
+  if (!hm[COL.TARGET]) { SpreadsheetApp.getUi().alert("[일정] 시트에 '대상자' 열이 없습니다."); return; }
+  var n = 0;
+  getAllSchedules_().forEach(function (s) {
+    if (s.status === STATUS.DELETED) return;
+    if (s.all && !s.target) { applyAllColumn_(sh, hm, s.row, s); sh.getRange(s.row, hm[COL.TARGET]).setValue('전부'); n++; return; }
+    if (s.target) { applyTargetColumn_(sh, hm, s.row, s); n++; return; }
+    if (s.checked.length) { syncTargetFromChecks_(sh, hm, s.row, s); n++; }
+  });
+  SpreadsheetApp.getActive().toast(n + '행의 대상자 체크를 다시 맞췄습니다.', '일정관리', 6);
 }
 
 /** 선택한 행을 상태=삭제 로 처리 (행 삭제 금지 원칙) */

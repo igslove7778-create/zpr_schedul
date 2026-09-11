@@ -71,3 +71,15 @@ test('"오후 회의"처럼 시간이 아닌 오후는 일정명 유지', () => 
   assert.deepStrictEqual([r.time, r.title], ['', '오후 회의']);
 });
 test('formatDateKo', () => assert.strictEqual(formatDateKo('2026-09-15'), '2026-09-15(화)'));
+
+// 시트 '대상자' 칸 텍스트 인식
+const { parseTargetNames_ } = require('../apps-script/Parser.gs');
+test('parseTargetNames_: 공백·쉼표 구분, 구성원 아닌 이름은 unknown', () => {
+  const r = parseTargetNames_('김유선, 성도형 홍길동', members);
+  assert.deepStrictEqual([r.targets, r.unknown], [['김유선', '성도형'], ['홍길동']]);
+});
+test('parseTargetNames_: 전부/전체/all -> [전부]', () => {
+  assert.deepStrictEqual(parseTargetNames_('전체', members).targets, ['전부']);
+  assert.deepStrictEqual(parseTargetNames_('김유선 전부', members).targets, ['전부']);
+  assert.deepStrictEqual(parseTargetNames_('', members).targets, []);
+});

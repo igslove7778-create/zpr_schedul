@@ -10,13 +10,26 @@
  */
 function parseScheduleCommand(text, opts) {
   opts = opts || {};
-  var now = opts.now || new Date();
-  var members = opts.members || [];
-  var pmFrom = Number(opts.pmFrom || 0);
-
   var raw = String(text || '').replace(/\s+/g, ' ').trim();
   if (!/^일정(\s|$)/.test(raw)) return fail_('NOT_COMMAND', '"일정"으로 시작해야 합니다.');
   var tokens = raw.split(' ').slice(1);
+  var r = parseDateTimeTitleTargets_(tokens, opts);
+  if (!r.ok) return r;
+  return { ok: true, date: r.date, time: r.time, allDay: r.allDay, title: r.title, targets: r.targets, error: null, message: '' };
+}
+
+/**
+ * 날짜·시간·일정명·@대상자 토큰을 해석하는 공통 로직 (등록·수정 명령이 공유).
+ * opts.requireDate / opts.requireTitle 기본 true (수정 명령에서는 false 로 넘겨 부분 변경을 허용한다).
+ * 반환 { ok, date, dateFound, time, timeFound, allDay, title, targets, error, message }
+ */
+function parseDateTimeTitleTargets_(tokens, opts) {
+  opts = opts || {};
+  var now = opts.now || new Date();
+  var members = opts.members || [];
+  var pmFrom = Number(opts.pmFrom || 0);
+  var requireDate = opts.requireDate !== false;
+  var requireTitle = opts.requireTitle !== false;
 
   // 1) @대상자 (PAR-06)
   var targets = [];
@@ -37,8 +50,8 @@ function parseScheduleCommand(text, opts) {
   // 2) 날짜 (PAR-02, PAR-05)
   var d = extractDate_(rest, now);
   if (d.error) return fail_(d.error, d.message);
-  if (!d.found) return fail_('NO_DATE', '날짜를 인식하지 못했습니다.');
-  rest = d.rest;
+  if (requireDate && !d.found) return fail_('NO_DATE', '날짜를 인식하지 못했습니다.');
+  if (d.found) rest = d.rest;
 
   // 3) 시간 (PAR-03, PAR-05)
   var tm = extractTime_(rest, pmFrom);
@@ -47,9 +60,70 @@ function parseScheduleCommand(text, opts) {
 
   // 4) 일정명 (PAR-04)
   var title = rest.join(' ').trim();
-  if (!title) return fail_('NO_TITLE', '일정명이 없습니다.');
+  if (requireTitle && !title) return fail_('NO_TITLE', '일정명이 없습니다.');
 
-  return { ok: true, date: d.date, time: tm.time || '', allDay: !tm.time, title: title, targets: targets, error: null, message: '' };
+  return {
+    ok: true, date: d.found ? d.date : '', dateFound: d.found,
+    time: tm.time || '', timeFound: !!tm.time, allDay: !tm.time,
+    title: title, targets: targets, error: null, message: ''
+  };
+}
+
+/**
+ * 텔레그램 수정 명령: "변경 {번호} {바꿀 날짜·시간·일정명·@대상자}" (전부 생략 가능, 최소 하나는 있어야 함)
+ * 번호는 "오늘 일정"·"이번주 일정" 목록에서 보여준 순번을 가리킨다 (Telegram.gs 에서 매핑).
+ * 반환 { ok, index, date, dateFound, time, timeFound, title, targets, error, message }
+ */
+function parseEditCommand(text, opts) {
+  opts = opts || {};
+  var raw = String(text || '').replace(/\s+/g, ' ').trim();
+  var m = /^(변경|수정)\s+(\d+)\s*(.*)$/.exec(raw);
+  if (!m) return fail_('NOT_EDIT_COMMAND', '"변경 {번호} {바꿀 내용}" 형식이어야 합니다.');
+  var idx = Number(m[2]);
+  var restText = (m[3] || '').trim();
+  var tokens = restText ? restText.split(' ') : [];
+  var r = parseDateTimeTitleTargets_(tokens, {
+    now: opts.now, members: opts.members, pmFrom: opts.pmFrom, requireDate: false, requireTitle: false
+  });
+  if (!r.ok) return r;
+  if (!r.dateFound && !r.timeFound && !r.title && !r.targets.length) {
+    return fail_('NO_CHANGE', '변경할 내용이 없습니다. 예) 변경 2 15:00');
+  }
+  return {
+    ok: true, index: idx, date: r.date, dateFound: r.dateFound,
+    time: r.time, timeFound: r.timeFound, title: r.title, targets: r.targets,
+    error: null, message: ''
+  };
+}
+
+/** 텔레그램 삭제 명령: "취소 {번호}" 또는 "삭제 {번호}" */
+function parseCancelCommand(text) {
+  var raw = String(text || '').replace(/\s+/g, ' ').trim();
+  var m = /^(취소|삭제)\s+(\d+)$/.exec(raw);
+  if (!m) return fail_('NOT_CANCEL_COMMAND', '"취소 {번호}" 형식이어야 합니다.');
+  return { ok: true, index: Number(m[2]), error: null, message: '' };
+}
+
+/**
+ * [일정] 시트 '대상자' 열 텍스트 -> 구성원 이름 목록. 공백·쉼표로 구분한다.
+ * '전부'/'전체'/'all' 은 전체 대상으로 취급. members 에 없는 토큰은 unknown 에 담아 반환한다.
+ * 반환 { targets:['전부']|[이름...], unknown:[인식 못한 토큰...] }
+ */
+function parseTargetNames_(text, members) {
+  members = members || [];
+  var tokens = String(text || '').split(/[,，\s]+/).map(function (t) { return t.trim(); }).filter(function (t) { return t; });
+  var targets = [];
+  var unknown = [];
+  tokens.forEach(function (t) {
+    if (t === '전부' || t === '전체' || t.toLowerCase() === 'all') {
+      if (targets.indexOf('전부') < 0) targets.push('전부');
+      return;
+    }
+    if (members.indexOf(t) >= 0) { if (targets.indexOf(t) < 0) targets.push(t); return; }
+    if (unknown.indexOf(t) < 0) unknown.push(t);
+  });
+  if (targets.indexOf('전부') >= 0) targets = ['전부'];
+  return { targets: targets, unknown: unknown };
 }
 
 function fail_(code, message) {
@@ -162,4 +236,11 @@ function formatMonthDay(ymd) {
   return p[1] + '월 ' + p[2] + '일';
 }
 
-if (typeof module !== 'undefined') module.exports = { parseScheduleCommand: parseScheduleCommand, formatDateKo: formatDateKo, formatMonthDay: formatMonthDay };
+if (typeof module !== 'undefined') module.exports = {
+  parseScheduleCommand: parseScheduleCommand,
+  parseEditCommand: parseEditCommand,
+  parseCancelCommand: parseCancelCommand,
+  parseTargetNames_: parseTargetNames_,
+  formatDateKo: formatDateKo,
+  formatMonthDay: formatMonthDay
+};

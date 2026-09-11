@@ -42,7 +42,7 @@ function tgSend_(chatId, text) {
 // ---------- Webhook ----------
 
 function doGet(e) {
-  return ContentService.createTextOutput('ZPR schedule bot: ok');
+  return HtmlService.createHtmlOutput('ZPR schedule bot: ok');
 }
 
 function doPost(e) {
@@ -50,16 +50,16 @@ function doPost(e) {
     var key = getProp_('WEBHOOK_KEY');
     if (!key || !e || !e.parameter || e.parameter.key !== key) {
       log_('오류', '', CHANNEL.TELEGRAM, '', '실패', '웹훅 키 불일치');
-      return ContentService.createTextOutput('forbidden');
+      return HtmlService.createHtmlOutput('forbidden');
     }
     var update = JSON.parse(e.postData.contents);
-    if (isDuplicateUpdate_(update.update_id)) return ContentService.createTextOutput('dup');
+    if (isDuplicateUpdate_(update.update_id)) return HtmlService.createHtmlOutput('dup');
     var msg = update.message || update.edited_message;
     if (msg && msg.text && msg.chat && msg.chat.type === 'private') handleMessage_(msg);
   } catch (err) {
     log_('오류', '', CHANNEL.TELEGRAM, '', '실패', 'doPost: ' + err + ' ' + (err.stack || ''));
   }
-  return ContentService.createTextOutput('ok');
+  return HtmlService.createHtmlOutput('ok');
 }
 
 /** 텔레그램은 응답이 없으면 같은 update 를 재전송한다. update_id 로 중복 처리 방지 */
@@ -93,14 +93,82 @@ function handleMessage_(msg) {
 
   // 조회 명령 (VIEW-06, 선택)
   if (/^(오늘|내일|이번주|이번 주)\s*일정$/.test(text) || text === '/today' || text === '/week') {
-    tgSend_(chatId, listSchedulesText_(member, text));
+    tgSend_(chatId, listSchedulesText_(chatId, member, text));
     return;
   }
+
+  // 삭제 (REG-06)
+  if (/^(취소|삭제)\s+\d+/.test(text)) { cancelFromTelegram_(chatId, member, text); return; }
+
+  // 수정 (REG-06)
+  if (/^(변경|수정)\s+\d+/.test(text)) { editFromTelegram_(chatId, member, text); return; }
 
   // 등록 (REG-02)
   if (/^일정(\s|$)/.test(text)) { registerFromTelegram_(chatId, member, text); return; }
 
-  tgSend_(chatId, '[사용법]\n' + getSettings_()['봇사용법'] + '\n\n조회: "오늘 일정", "이번주 일정"');
+  tgSend_(chatId, '[사용법]\n' + getSettings_()['봇사용법'] +
+    '\n\n조회: "오늘 일정", "이번주 일정"' +
+    '\n수정: 목록 번호 확인 후 "변경 2 15:00" 처럼 바꿀 내용만 입력' +
+    '\n삭제: "취소 2" 또는 "삭제 2"');
+}
+
+/** 목록에서 보여준 번호(idx, 1부터) -> {row, id}. 목록을 먼저 조회해야 유효하다 */
+function resolveListedSchedule_(chatId, idx) {
+  var cache = CacheService.getScriptCache();
+  var raw = cache.get('list_' + chatId);
+  if (!raw) return null;
+  var arr = JSON.parse(raw);
+  return arr[idx - 1] || null;
+}
+
+function cancelFromTelegram_(chatId, member, text) {
+  var c = parseCancelCommand(text);
+  if (!c.ok) { tgSend_(chatId, '[삭제 실패] ' + c.message); return; }
+  var listed = resolveListedSchedule_(chatId, c.index);
+  if (!listed) { tgSend_(chatId, '[삭제 실패] 번호를 찾을 수 없습니다. 먼저 "오늘 일정"이나 "이번주 일정"으로 목록을 확인해 주세요.'); return; }
+  var s = getSchedule_(listed.row);
+  if (!s.id || s.id !== listed.id || s.status === STATUS.DELETED) { tgSend_(chatId, '[삭제 실패] 이미 삭제됐거나 바뀐 일정입니다. 목록을 다시 확인해 주세요.'); return; }
+  if (!canEdit_(s, member)) { tgSend_(chatId, '[삭제 실패] 본인이 등록한 일정만 삭제할 수 있습니다.'); return; }
+
+  var sh = sheet_(SHEET.SCHEDULE);
+  var hm = headerMap_(sh);
+  setCell_(sh, hm, listed.row, COL.STATUS, STATUS.DELETED);
+  setCell_(sh, hm, listed.row, COL.UPDATED, nowString_());
+  log_('삭제', s.id, CHANNEL.TELEGRAM, member.name, '성공', scheduleText_(s));
+  notifyDeleted_(s);
+  tgSend_(chatId, '[삭제 완료] ' + scheduleText_(s));
+}
+
+function editFromTelegram_(chatId, member, text) {
+  var settings = getSettings_();
+  var names = getMembers_().map(function (m) { return m.name; });
+  var c = parseEditCommand(text, { members: names, pmFrom: Number(settings['오후해석시작시'] || 0) });
+  if (!c.ok) { tgSend_(chatId, '[변경 실패] ' + c.message + '\n예) 변경 2 15:00  /  변경 2 9/20 방산IR 제출'); return; }
+  var listed = resolveListedSchedule_(chatId, c.index);
+  if (!listed) { tgSend_(chatId, '[변경 실패] 번호를 찾을 수 없습니다. 먼저 "오늘 일정"이나 "이번주 일정"으로 목록을 확인해 주세요.'); return; }
+  var s = getSchedule_(listed.row);
+  if (!s.id || s.id !== listed.id || s.status === STATUS.DELETED) { tgSend_(chatId, '[변경 실패] 이미 삭제됐거나 바뀐 일정입니다. 목록을 다시 확인해 주세요.'); return; }
+  if (!canEdit_(s, member)) { tgSend_(chatId, '[변경 실패] 본인이 등록한 일정만 수정할 수 있습니다.'); return; }
+
+  var sh = sheet_(SHEET.SCHEDULE);
+  var hm = headerMap_(sh);
+  var before = formatMonthDay(s.date) + ' ' + (s.time || '종일');
+  if (c.dateFound) {
+    var p = c.date.split('-').map(Number);
+    sh.getRange(listed.row, hm[COL.DATE]).setValue(new Date(p[0], p[1] - 1, p[2]));
+  }
+  if (c.timeFound) sh.getRange(listed.row, hm[COL.TIME]).setNumberFormat('@').setValue(c.time);
+  if (c.title) setCell_(sh, hm, listed.row, COL.TITLE, c.title);
+  if (c.targets.length && hm[COL.TARGET]) {
+    setCell_(sh, hm, listed.row, COL.TARGET, c.targets.indexOf('전부') >= 0 ? '전체' : c.targets.join(' '));
+    applyTargetColumn_(sh, hm, listed.row, getSchedule_(listed.row));
+  }
+  setCell_(sh, hm, listed.row, COL.UPDATED, nowString_());
+
+  var updated = getSchedule_(listed.row);
+  log_('수정', s.id, CHANNEL.TELEGRAM, member.name, '성공', text);
+  if (s.alarm === ALARM.SENT) notifyChanged_(updated, before);
+  tgSend_(chatId, '[변경 완료] ' + scheduleText_(updated));
 }
 
 function linkAccount_(chatId, tgId, from, code) {
@@ -139,8 +207,8 @@ function registerFromTelegram_(chatId, member, text) {
   if (settings['즉시알림'] !== 'N') notifyImmediate_(s, member.name);
 }
 
-/** VIEW-06: 본인 열람 가능 일정 목록 */
-function listSchedulesText_(member, text) {
+/** VIEW-06: 본인 열람 가능 일정 목록. 표시한 번호는 캐시에 남겨 "변경 N"·"취소 N" 명령이 참조한다 */
+function listSchedulesText_(chatId, member, text) {
   var today = new Date();
   var from = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   var to = new Date(from);
@@ -153,8 +221,12 @@ function listSchedulesText_(member, text) {
   var list = getAllSchedules_().filter(function (s) {
     return s.status !== STATUS.DELETED && s.date >= fromS && s.date < toS && canView_(s, member);
   }).sort(function (a, b) { return (a.date + a.time).localeCompare(b.date + b.time); });
-  if (!list.length) return '[' + label + ' 일정] 없음';
-  return '[' + label + ' 일정]\n' + list.map(function (s) {
-    return formatMonthDay(s.date) + ' ' + (s.time || '종일') + ' ' + s.title + (s.memo ? ' (' + s.memo + ')' : '');
+
+  if (!list.length) { CacheService.getScriptCache().remove('list_' + chatId); return '[' + label + ' 일정] 없음'; }
+
+  CacheService.getScriptCache().put('list_' + chatId, JSON.stringify(list.map(function (s) { return { row: s.row, id: s.id }; })), 1800);
+  var body = list.map(function (s, i) {
+    return (i + 1) + '. ' + formatMonthDay(s.date) + ' ' + (s.time || '종일') + ' ' + s.title + (s.memo ? ' (' + s.memo + ')' : '');
   }).join('\n');
+  return '[' + label + ' 일정]\n' + body + '\n\n수정: "변경 번호 ..."  삭제: "취소 번호" (본인 등록 건만)';
 }

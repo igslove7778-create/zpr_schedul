@@ -34,6 +34,23 @@ function notifyImmediate_(s, excludeName) {
   markAlarm_(s, res);
 }
 
+/**
+ * 시트 직접 등록 알림 (REG-01 + REG-05).
+ * 대상자에게 즉시 알림을 보내고, 등록자가 대상에 없으면 등록자에게도 등록 완료 확인을 보낸다
+ * (텔레그램 등록은 봇 회신으로 확인하지만 시트 등록은 확인 채널이 없으므로).
+ */
+function notifySheetRegistered_(s) {
+  var res = broadcast_(s, '[일정 알림] ' + scheduleText_(s) + '\n대상: ' + targetLabel_(s) + '\n등록: ' + (s.registrant || '-'), null);
+  var reg = s.registrant ? findMemberByName_(s.registrant) : null;
+  if (reg && reg.tgId && res.sent.indexOf(reg.name) < 0 && res.failed.indexOf(reg.name) < 0) {
+    try {
+      tgSend_(reg.tgId, '[일정 등록 완료] ' + scheduleText_(s) + '\n대상: ' + targetLabel_(s));
+      res.sent.push(reg.name + '(등록확인)');
+    } catch (e) { log_('알림', s.id, CHANNEL.TELEGRAM, reg.name, '실패', '등록확인: ' + e); }
+  }
+  markAlarm_(s, res);
+}
+
 /** 변경 재알림 (AUTH-05) */
 function notifyChanged_(s, before) {
   var text = '[일정 변경] ' + (before ? before + ' → ' : '') + scheduleText_(s) + '\n대상: ' + targetLabel_(s);
@@ -93,6 +110,54 @@ function runReminders() {
     }
     if (changed) setCell_(sh, hm, s.row, COL.REMIND, flags.join(';'));
   });
+
+  try { runTransferReminders(); } catch (e) { log_('오류', '', CHANNEL.SHEET, '시스템', '실패', 'runTransferReminders: ' + e); }
+}
+
+/**
+ * [이체내역] 알림 — 오늘이 이체일인 항목을 [설정]'이체담당자명'에게 텔레그램으로 발송한다.
+ * 하루 한 번만 보내도록 스크립트 속성에 마지막 발송일을 남긴다 (runReminders 트리거에 얹혀 10분마다 확인).
+ */
+function runTransferReminders() { runTransferReminders_(false); }
+
+/** 메뉴 '이체내역 지금 발송(테스트)' 용 — 시각·중복 체크를 건너뛰고 즉시 발송 (발송일 기록은 남기지 않음) */
+function sendTransfersNow() {
+  runTransferReminders_(true);
+  SpreadsheetApp.getActive().toast('이체내역 발송 처리(테스트)', '일정관리');
+}
+
+function runTransferReminders_(force) {
+  var settings = getSettings_();
+  var now = new Date();
+  var todayS = Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd');
+  var props = PropertiesService.getScriptProperties();
+  if (!force) {
+    var at = String(settings['이체알림시각'] || '').trim();
+    if (!at) return;
+    var nowHM = Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm');
+    if (nowHM < at) return;
+    if (props.getProperty('TRANSFER_SENT_DATE') === todayS) return;
+  }
+
+  var items = getTodayTransfers_(now.getDate());
+  if (items.length) {
+    var text = '[오늘 이체 예정]\n' + items.join('\n');
+    var name = String(settings['이체담당자명'] || '').trim();
+    var member = name ? findMemberByName_(name) : null;
+    if (member && member.tgId) {
+      try {
+        tgSend_(member.tgId, text);
+        log_('알림', '', CHANNEL.TELEGRAM, member.name, '성공', '이체내역 ' + items.length + '건');
+      } catch (e) {
+        log_('알림', '', CHANNEL.TELEGRAM, member.name, '실패', String(e));
+        notifyAdmins_('이체내역 알림 발송 실패(' + member.name + '): ' + e);
+      }
+    } else {
+      log_('알림', '', CHANNEL.TELEGRAM, '', '실패', '이체담당자 미설정/미연결 - [설정] "이체담당자명" 확인 필요');
+      notifyAdmins_('이체내역 알림 대상(' + (name || '미설정') + ')이 연결되지 않아 관리자에게 대신 보냅니다.\n' + text);
+    }
+  }
+  if (!force) props.setProperty('TRANSFER_SENT_DATE', todayS);
 }
 
 /** 관리자 텔레그램 통보 (SYNC-07) */

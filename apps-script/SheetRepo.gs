@@ -41,6 +41,7 @@ function getMembers_(includeInactive) {
       role: String(r[hm[MEMBER_COL.ROLE] - 1] || '일반').trim(),
       active: active,
       code: String(r[hm[MEMBER_COL.CODE] - 1] || '').trim(),
+      calId: hm[MEMBER_COL.CAL_ID] ? String(r[hm[MEMBER_COL.CAL_ID] - 1] || '').trim() : '',
       row: i + 2
     });
   });
@@ -68,6 +69,31 @@ function getOperatorName_() {
   return a ? a.name : '담당자';
 }
 
+/**
+ * 시트를 편집한 사람의 이름. onEdit 이벤트의 편집자 이메일을 [구성원] '구글 계정' 과 대조한다.
+ * 개인 Gmail 은 구글 보안 정책상 편집자 이메일이 비어 올 수 있다 -> 그때는 getOperatorName_() 로 대체.
+ */
+function getEditorName_(e) {
+  var email = '';
+  try { if (e && e.user) email = String(e.user.getEmail() || ''); } catch (err) { /* 권한 없음 */ }
+  // 주의: Session.getActiveUser() 는 설치형 트리거 안에서 편집자가 아니라 트리거 설치자를 돌려줄 수 있어 쓰지 않는다
+  email = email.trim().toLowerCase();
+  editorDiag_(e, email);
+  if (email) {
+    var m = getMembers_(true).filter(function (x) { return x.email.toLowerCase() === email; })[0];
+    if (m) return m.name;
+  }
+  return getOperatorName_();
+}
+
+/** (진단용) 편집 이벤트에서 구글이 넘겨주는 사용자 정보를 [로그]에 남긴다. 원인 확인 후 제거 예정 */
+function editorDiag_(e, email) {
+  var a = '', f = '';
+  try { a = Session.getActiveUser().getEmail(); } catch (x) { a = 'ERR'; }
+  try { f = Session.getEffectiveUser().getEmail(); } catch (y) { f = 'ERR'; }
+  log_('진단', '', CHANNEL.SHEET, '시스템', '정보', 'e.user=' + (email || '(빈값)') + ' / active=' + (a || '(빈값)') + ' / effective(트리거소유자)=' + (f || '(빈값)'));
+}
+
 // ---------- 일정 ----------
 
 /** 일정 시트의 행 하나를 객체로 */
@@ -88,6 +114,7 @@ function rowToSchedule_(hm, rowIdx, values, members) {
     date: date, time: time,
     title: String(get(COL.TITLE) || '').trim(),
     memo: String(get(COL.MEMO) || '').trim(),
+    target: String(get(COL.TARGET) || '').trim(),
     alarm: String(get(COL.ALARM) || '').trim(),
     all: isChecked_(get(COL.ALL)),
     checked: checked,
@@ -105,11 +132,30 @@ function memberNames_() {
   return getMembers_(true).map(function (m) { return m.name; });
 }
 
+/**
+ * [일정] 시트의 사람 체크 열 이름 목록.
+ * '리마인드'(마지막 시스템 열) 오른쪽에 있는 헤더는 전부 사람 이름으로 본다 (시트에 직접 추가한 열 포함)
+ * + [구성원] 시트 이름. 순서는 시트 헤더 순.
+ */
+function checkColumnNames_(hm) {
+  var headers = hm.__headers || [];
+  var start = hm[COL.REMIND] || hm[COL.ID] || 0; // 1-based; 이 열 오른쪽부터
+  var known = {};
+  Object.keys(COL).forEach(function (k) { known[COL[k]] = true; });
+  var out = [];
+  headers.forEach(function (h, i) {
+    if (i + 1 <= start || !h || known[h]) return;
+    if (out.indexOf(h) < 0) out.push(h);
+  });
+  memberNames_().forEach(function (n) { if (hm[n] && out.indexOf(n) < 0) out.push(n); });
+  return out;
+}
+
 function getSchedule_(rowIdx) {
   var sh = sheet_(SHEET.SCHEDULE);
   var hm = headerMap_(sh);
   var values = sh.getRange(rowIdx, 1, 1, sh.getLastColumn()).getValues()[0];
-  return rowToSchedule_(hm, rowIdx, values, memberNames_());
+  return rowToSchedule_(hm, rowIdx, values, checkColumnNames_(hm));
 }
 
 function getAllSchedules_() {
@@ -117,7 +163,7 @@ function getAllSchedules_() {
   if (sh.getLastRow() < 2) return [];
   var hm = headerMap_(sh);
   var rows = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
-  var members = memberNames_();
+  var members = checkColumnNames_(hm);
   return rows.map(function (r, i) { return rowToSchedule_(hm, i + 2, r, members); })
     .filter(function (s) { return s.date || s.title; });
 }
@@ -146,6 +192,7 @@ function appendSchedule_(s) {
     row[hm[COL.TITLE] - 1] = s.title;
     row[hm[COL.MEMO] - 1] = s.memo || '';
     row[hm[COL.ALARM] - 1] = ALARM.PENDING;
+    if (hm[COL.TARGET]) row[hm[COL.TARGET] - 1] = s.targets.indexOf('전부') >= 0 ? '전체' : s.targets.join(' ');
     if (s.targets.indexOf('전부') >= 0) row[hm[COL.ALL] - 1] = 'o';
     else s.targets.forEach(function (n) { if (hm[n]) row[hm[n] - 1] = 'o'; });
     row[hm[COL.ID] - 1] = id;
@@ -162,6 +209,30 @@ function appendSchedule_(s) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------- 이체내역 ----------
+
+/** 오늘(day, 1~31)이 이체일인 [이체내역] 행을 읽어 표시용 문자열 배열로 반환 */
+function getTodayTransfers_(day) {
+  var sh = ss_().getSheetByName(SHEET.TRANSFER);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var hm = headerMap_(sh);
+  var rows = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+  var out = [];
+  rows.forEach(function (r) {
+    var dayVal = r[hm[TRANSFER_COL.DAY] - 1];
+    if (Number(dayVal) !== day) return;
+    var holder = String(r[hm[TRANSFER_COL.HOLDER] - 1] || '').trim();
+    if (!holder) return;
+    var bank = String(r[hm[TRANSFER_COL.BANK] - 1] || '').trim();
+    var account = String(r[hm[TRANSFER_COL.ACCOUNT] - 1] || '').trim();
+    var amount = r[hm[TRANSFER_COL.AMOUNT] - 1];
+    var memo = String(r[hm[TRANSFER_COL.MEMO] - 1] || '').trim();
+    var amountText = amount ? Number(amount).toLocaleString('ko-KR') + '원' : '';
+    out.push('- ' + holder + (bank || account ? ' / ' + bank + ' ' + account : '') + (amountText ? ' / ' + amountText : '') + (memo ? ' (' + memo + ')' : ''));
+  });
+  return out;
 }
 
 // ---------- 로그 (ADM-03) ----------

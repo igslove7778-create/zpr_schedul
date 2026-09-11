@@ -14,14 +14,15 @@ var SYSTEM_COLS = [COL.ID, COL.REGISTRANT, COL.CHANNEL, COL.CAL_ID, COL.UPDATED,
 var TRANSFER_COL = { DAY: '이체일(매월)', HOLDER: '예금주', BANK: '은행', ACCOUNT: '계좌번호', AMOUNT: '금액', MEMO: '메모' };
 var TRANSFER_HEADERS = [TRANSFER_COL.DAY, TRANSFER_COL.HOLDER, TRANSFER_COL.BANK, TRANSFER_COL.ACCOUNT, TRANSFER_COL.AMOUNT, TRANSFER_COL.MEMO];
 
-var MEMBER_COL = { NAME: '이름', EMAIL: '구글 계정', TG_ID: '텔레그램 ID', ROLE: '권한', ACTIVE: '사용여부', CODE: '인증코드' };
-var MEMBER_HEADERS = [MEMBER_COL.NAME, MEMBER_COL.EMAIL, MEMBER_COL.TG_ID, MEMBER_COL.ROLE, MEMBER_COL.ACTIVE, MEMBER_COL.CODE];
+var MEMBER_COL = { NAME: '이름', EMAIL: '구글 계정', TG_ID: '텔레그램 ID', ROLE: '권한', ACTIVE: '사용여부', CODE: '인증코드', CAL_ID: '캘린더ID' };
+var MEMBER_HEADERS = [MEMBER_COL.NAME, MEMBER_COL.EMAIL, MEMBER_COL.TG_ID, MEMBER_COL.ROLE, MEMBER_COL.ACTIVE, MEMBER_COL.CODE, MEMBER_COL.CAL_ID];
 var LOG_HEADERS = ['일시', '구분', '일정ID', '채널', '처리자', '결과', '상세'];
 
 var ALARM = { PENDING: '대기', SENT: '발송완료', FAILED: '실패' };
 var STATUS = { NORMAL: '정상', DELETED: '삭제' };
 var CHANNEL = { SHEET: '시트', TELEGRAM: '텔레그램', CALENDAR: '캘린더', WEB: '웹' };
 var CHECK_VALUES = ['o', 'O', 'ㅇ', '○', 'TRUE', true];
+var CHECK_MARK = 'O'; // 자동 체크 시 기록하는 표시
 
 // [설정] 시트 기본값. 키 / 값 / 설명
 var DEFAULT_SETTINGS = [
