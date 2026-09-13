@@ -1220,6 +1220,32 @@ function zUpsertCalendarEvent_(calendar, schedule, knownEventId) {
   return event.getId();
 }
 
+// A sheet row can be deliberately removed instead of being marked 삭제.  In
+// that case its calendar ID is no longer available in the sheet, so find only
+// Zephyrus-marked team events whose schedule IDs no longer exist and remove
+// them during the regular one-minute sync.
+function zDeleteOrphanedTeamEvents_(calendar) {
+  var existing = {};
+  zSchedules_().forEach(function(schedule) {
+    if (schedule.id) existing[schedule.id] = true;
+  });
+  var now = new Date();
+  var from = new Date(now.getFullYear() - 1, 0, 1);
+  var until = new Date(now.getFullYear() + 3, 0, 1);
+  var removed = 0;
+  calendar.getEvents(from, until).forEach(function(event) {
+    var id = zMarkerScheduleId_(event.getDescription());
+    if (!id || existing[id]) return;
+    try {
+      event.deleteEvent();
+      removed++;
+    } catch (error) {
+      zLog_('오류', id, '캘린더', '실패', '행 삭제 일정 삭제 실패: ' + error);
+    }
+  });
+  return removed;
+}
+
 function syncCalendar_() {
   // Calendar event triggers can be delayed or missed for a change made by a
   // different editor of the shared calendar.  The existing one-minute sync is
@@ -1255,7 +1281,10 @@ function syncCalendar_() {
       }
       if (zMemberCalendarSyncEnabled_()) zSyncScheduleToMemberCalendars_(schedule);
     });
-    zLog_('동기화', '', '캘린더', '성공', zMemberCalendarSyncEnabled_() ? '시트·개인 캘린더·팀 캘린더 반영 완료' : '시트에서 팀 캘린더 반영 완료');
+    var orphanRemoved = zDeleteOrphanedTeamEvents_(calendar);
+    var detail = zMemberCalendarSyncEnabled_() ? '시트·개인 캘린더·팀 캘린더 반영 완료' : '시트에서 팀 캘린더 반영 완료';
+    if (orphanRemoved) detail += ' / 행 삭제 일정 ' + orphanRemoved + '건 삭제';
+    zLog_('동기화', '', '캘린더', '성공', detail);
   } catch (error) {
     zLog_('오류', '', '캘린더', '실패', error);
     throw error;
