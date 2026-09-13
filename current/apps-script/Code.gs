@@ -296,6 +296,14 @@ function zMembers_() {
   }).filter(function(member) { return member.name && member.active; });
 }
 
+function zMemberByEmail_(email) {
+  var wanted = String(email || '').trim().toLowerCase();
+  if (!wanted) return null;
+  return zMembers_().filter(function(member) {
+    return String(member.email || '').trim().toLowerCase() === wanted;
+  })[0] || null;
+}
+
 function zScheduleFromRow_(row, index, map, members) {
   function value(name) { return map[name] ? row[map[name] - 1] : ''; }
   return {
@@ -1254,10 +1262,20 @@ function zApplyCalendarApiEvent_(event) {
     zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
     return;
   }
-  zAppendSchedule_({
+  // A Calendar event has no "대상자" field.  When the creator is registered
+  // in 구성원, treat that person as the registrant so they and administrators
+  // receive the same Telegram record as a Telegram-created schedule.
+  var creator = zMemberByEmail_(event.creator && event.creator.email || event.organizer && event.organizer.email);
+  var imported = zAppendSchedule_({
     date: ymd, time: time, title: String(event.summary), memo: String(event.description || '').replace(/\[ZEPHYRUS:[^\]]+\]/g, '').trim(),
-    registrant: '캘린더', channel: '캘린더', calendarEvent: '팀:' + eventKey, deferSort: true
+    targets: creator ? creator.name : '', registrant: creator ? creator.name : '캘린더',
+    channel: '캘린더', calendarEvent: '팀:' + eventKey, deferSort: true
   });
+  if (zSettings_()['즉시알림'] !== 'N') {
+    var notified = zNotifySchedule_(imported, '[캘린더 새 일정]');
+    zLog_('알림', imported.id, '텔레그램', notified.failed.length ? '일부 실패' : '성공',
+      notified.sent.length ? notified.sent.join(', ') + '에게 발송' : '연결된 수신자가 없습니다.');
+  }
 }
 
 function onCalendarChange_() {
