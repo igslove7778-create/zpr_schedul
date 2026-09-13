@@ -1206,6 +1206,15 @@ function zUpsertCalendarEvent_(calendar, schedule, knownEventId) {
 }
 
 function syncCalendar_() {
+  // Calendar event triggers can be delayed or missed for a change made by a
+  // different editor of the shared calendar.  The existing one-minute sync is
+  // also a safe fallback reader, so team-calendar changes are never dependent
+  // on who created them.
+  try {
+    onCalendarChange_();
+  } catch (reverseError) {
+    zLog_('오류', '', '캘린더', '건너뜀', '팀 캘린더 확인 실패: ' + reverseError);
+  }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) return;
   try {
@@ -1403,6 +1412,7 @@ function handleEdit(event) {
     var sheet = event.range.getSheet();
     if (sheet.getName() !== ZEPHYRUS.sheet.schedule || event.range.getRow() < 2) return;
     var map = zHeaders_(sheet);
+    var shouldSort = false;
     for (var row = event.range.getRow(); row < event.range.getRow() + event.range.getNumRows(); row++) {
       var values = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
       var schedule = zScheduleFromRow_(values, row, map);
@@ -1427,8 +1437,11 @@ function handleEdit(event) {
       } else {
         zSetSchedule_(row, ZEPHYRUS.col.updated, zNowText_());
       }
+      // A date alone is not a finished schedule.  Keep the row in place while
+      // the user enters date and time; sort only after the title is present.
+      shouldSort = true;
     }
-    zNormalizeAndSortScheduleSheet_();
+    if (shouldSort) zNormalizeAndSortScheduleSheet_();
   } catch (error) {
     zLog_('오류', '', '시트', '실패', 'handleEdit: ' + error);
   }
