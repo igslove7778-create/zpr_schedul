@@ -192,9 +192,28 @@ function zNormalizeTime_(value) {
   var text = String(value || '').trim();
   if (!text) return '';
   var match = text.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return '';
-  var hour = Number(match[1]);
-  var minute = Number(match[2]);
+  var hour;
+  var minute;
+  if (match) {
+    hour = Number(match[1]);
+    minute = Number(match[2]);
+  } else {
+    // Sheet users may write natural Korean time text.  A bare "2시" is
+    // treated as 02:00; use "오후 2시" when the afternoon is intended.
+    match = text.match(/^(오전|오후)\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분?)?$/);
+    if (match) {
+      hour = Number(match[2]);
+      minute = Number(match[3] || 0);
+      if (hour < 1 || hour > 12) return '';
+      if (match[1] === '오전' && hour === 12) hour = 0;
+      if (match[1] === '오후' && hour < 12) hour += 12;
+    } else {
+      match = text.match(/^(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분?)?$/);
+      if (!match) return '';
+      hour = Number(match[1]);
+      minute = Number(match[2] || 0);
+    }
+  }
   if (hour > 23 || minute > 59) return '';
   return ('0' + hour).slice(-2) + ':' + ('0' + minute).slice(-2);
 }
@@ -1387,6 +1406,14 @@ function handleEdit(event) {
     for (var row = event.range.getRow(); row < event.range.getRow() + event.range.getNumRows(); row++) {
       var values = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
       var schedule = zScheduleFromRow_(values, row, map);
+      var rawTime = values[map[ZEPHYRUS.col.time] - 1];
+      // Show the normalized result in the sheet as well as using it for the
+      // calendar.  For example, "오후 2시" becomes the unambiguous "14:00".
+      if (schedule.time && String(rawTime).trim() !== schedule.time) {
+        sheet.getRange(row, map[ZEPHYRUS.col.time]).setValue(schedule.time).setNumberFormat('@');
+        values[map[ZEPHYRUS.col.time] - 1] = schedule.time;
+        schedule = zScheduleFromRow_(values, row, map);
+      }
       if (!schedule.date || !schedule.title || schedule.status === ZEPHYRUS.status.deleted) continue;
       if (!schedule.id) {
         zSetSchedule_(row, ZEPHYRUS.col.id, zId_());
