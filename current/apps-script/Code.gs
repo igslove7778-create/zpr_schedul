@@ -15,7 +15,8 @@ var ZEPHYRUS = {
     schedule: '일정',
     members: '구성원',
     settings: '설정',
-    log: '로그'
+    log: '로그',
+    syncIndex: '제피로스_연동백업'
   },
   col: {
     date: '날짜',
@@ -1220,29 +1221,47 @@ function zUpsertCalendarEvent_(calendar, schedule, knownEventId) {
   return event.getId();
 }
 
-// A sheet row can be deliberately removed instead of being marked 삭제.  In
-// that case its calendar ID is no longer available in the sheet, so find only
-// Zephyrus-marked team events whose schedule IDs no longer exist and remove
-// them during the regular one-minute sync.
-function zDeleteOrphanedTeamEvents_(calendar) {
-  var existing = {};
+// Keep only a private index of already-linked team events.  If a user removes
+// a row, this lets us delete that exact event without scanning unrelated
+// calendar entries by title, date or a missing sheet ID.
+function zSyncIndexSheet_() {
+  var ss = zSpreadsheet_();
+  var sheet = ss.getSheetByName(ZEPHYRUS.sheet.syncIndex);
+  if (sheet) return sheet;
+  sheet = ss.insertSheet(ZEPHYRUS.sheet.syncIndex);
+  sheet.appendRow(['일정ID', '팀캘린더ID']);
+  sheet.hideSheet();
+  return sheet;
+}
+
+function zSyncDeletedRows_(calendar) {
+  var indexSheet = zSyncIndexSheet_();
+  var current = {};
   zSchedules_().forEach(function(schedule) {
-    if (schedule.id) existing[schedule.id] = true;
+    if (schedule.id) current[schedule.id] = zTeamEventId_(schedule);
   });
-  var now = new Date();
-  var from = new Date(now.getFullYear() - 1, 0, 1);
-  var until = new Date(now.getFullYear() + 3, 0, 1);
+  var previous = indexSheet.getLastRow() < 2 ? [] : indexSheet.getRange(2, 1, indexSheet.getLastRow() - 1, 2).getValues();
   var removed = 0;
-  calendar.getEvents(from, until).forEach(function(event) {
-    var id = zMarkerScheduleId_(event.getDescription());
-    if (!id || existing[id]) return;
+  previous.forEach(function(row) {
+    var id = String(row[0] || '');
+    var eventId = String(row[1] || '');
+    if (!id || current[id] || !eventId) return;
     try {
-      event.deleteEvent();
-      removed++;
+      var event = calendar.getEventById(eventId);
+      // Delete only when this is the exact Zephyrus event recorded for the
+      // removed row.  A stale or reused calendar ID is never deleted.
+      if (event && zMarkerScheduleId_(event.getDescription()) === id) {
+        event.deleteEvent();
+        removed++;
+      }
     } catch (error) {
       zLog_('오류', id, '캘린더', '실패', '행 삭제 일정 삭제 실패: ' + error);
     }
   });
+  var rows = Object.keys(current).filter(function(id) { return current[id]; }).map(function(id) { return [id, current[id]]; });
+  var clearRows = Math.max(indexSheet.getLastRow() - 1, rows.length, 1);
+  indexSheet.getRange(2, 1, clearRows, 2).clearContent();
+  if (rows.length) indexSheet.getRange(2, 1, rows.length, 2).setValues(rows);
   return removed;
 }
 
@@ -1281,9 +1300,9 @@ function syncCalendar_() {
       }
       if (zMemberCalendarSyncEnabled_()) zSyncScheduleToMemberCalendars_(schedule);
     });
-    var orphanRemoved = zDeleteOrphanedTeamEvents_(calendar);
+    var removedRows = zSyncDeletedRows_(calendar);
     var detail = zMemberCalendarSyncEnabled_() ? '시트·개인 캘린더·팀 캘린더 반영 완료' : '시트에서 팀 캘린더 반영 완료';
-    if (orphanRemoved) detail += ' / 행 삭제 일정 ' + orphanRemoved + '건 삭제';
+    if (removedRows) detail += ' / 행 삭제 일정 ' + removedRows + '건 삭제';
     zLog_('동기화', '', '캘린더', '성공', detail);
   } catch (error) {
     zLog_('오류', '', '캘린더', '실패', error);
