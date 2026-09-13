@@ -156,15 +156,33 @@ function zNormalizeDate_(value) {
   }
   var text = String(value || '').trim();
   var match = text.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+  if (match) return zDateTextFromParts_(match[1], match[2], match[3]);
+
+  // The original sheet contains date-like text such as "9월 16일" and
+  // "9-20".  Treat these as dates in the current Korean calendar year so
+  // old and new schedules can share one real date column and sort correctly.
+  match = text.match(/^(\d{1,2})\s*월\s*(\d{1,2})\s*일?$/) ||
+    text.match(/^(\d{1,2})[-./](\d{1,2})$/);
   if (!match) return '';
-  return match[1] + '-' + ('0' + match[2]).slice(-2) + '-' + ('0' + match[3]).slice(-2);
+  return zDateTextFromParts_(Utilities.formatDate(new Date(), ZEPHYRUS.kst, 'yyyy'), match[1], match[2]);
+}
+
+function zDateTextFromParts_(year, month, day) {
+  var y = Number(year);
+  var m = Number(month);
+  var d = Number(day);
+  // 03:00 UTC is noon in Korea, which avoids a date shifting at midnight.
+  var date = new Date(Date.UTC(y, m - 1, d, 3, 0, 0));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return '';
+  return y + '-' + ('0' + m).slice(-2) + '-' + ('0' + d).slice(-2);
 }
 
 function zDateObject_(ymd) {
-  var parts = String(ymd || '').split('-').map(Number);
+  if (ymd instanceof Date && !isNaN(ymd.getTime())) return ymd;
+  var normalized = zNormalizeDate_(ymd);
+  var parts = normalized.split('-').map(Number);
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
-  var date = new Date(parts[0], parts[1] - 1, parts[2]);
-  return isNaN(date.getTime()) ? null : date;
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 3, 0, 0));
 }
 
 function zNormalizeTime_(value) {
@@ -373,6 +391,39 @@ function zSetSchedule_(rowNumber, name, value) {
   sheet.getRange(rowNumber, map[name]).setValue(value);
 }
 
+// Keep dates as real date values, but display them in the familiar Korean
+// format.  Sorting the complete row range keeps every schedule's notes,
+// targets, IDs and check marks together.
+function zNormalizeAndSortScheduleSheet_() {
+  var sheet = zSheet_(ZEPHYRUS.sheet.schedule);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  var map = zHeaders_(sheet);
+  var rowCount = lastRow - 1;
+  var dateRange = sheet.getRange(2, map[ZEPHYRUS.col.date], rowCount, 1);
+  var dates = dateRange.getValues();
+  var normalizedCount = 0;
+  var values = dates.map(function(row) {
+    var before = row[0];
+    var normalized = zNormalizeDate_(before);
+    if (!normalized) return [before];
+    var date = zDateObject_(normalized);
+    if (zNormalizeDate_(before) !== Utilities.formatDate(date, ZEPHYRUS.kst, 'yyyy-MM-dd') || !(before instanceof Date)) normalizedCount++;
+    return [date];
+  });
+  dateRange.setValues(values).setNumberFormat('m"월" d"일"');
+
+  var sortBy = [{ column: map[ZEPHYRUS.col.date], ascending: true }];
+  if (map[ZEPHYRUS.col.time]) sortBy.push({ column: map[ZEPHYRUS.col.time], ascending: true });
+  sheet.getRange(2, 1, rowCount, sheet.getLastColumn()).sort(sortBy);
+  return normalizedCount;
+}
+
+function zNormalizeAndSortSchedules() {
+  var count = zNormalizeAndSortScheduleSheet_();
+  zNotice_(count + '개 날짜를 통일하고 일정표를 날짜순으로 정렬했습니다.');
+}
+
 function zFindScheduleById_(id) {
   return zSchedules_().filter(function(schedule) { return schedule.id === id; })[0] || null;
 }
@@ -471,6 +522,7 @@ function zAppendSchedule_(input) {
   sheet.getRange(number, map[ZEPHYRUS.col.date]).setNumberFormat('yyyy-mm-dd');
   sheet.getRange(number, map[ZEPHYRUS.col.time]).setNumberFormat('@');
   zWriteScheduleMemberChecks_(number, input.targets || input.registrant || '');
+  if (!input.deferSort) zNormalizeAndSortScheduleSheet_();
   return zFindScheduleById_(id);
 }
 
@@ -1204,7 +1256,7 @@ function zApplyCalendarApiEvent_(event) {
   }
   zAppendSchedule_({
     date: ymd, time: time, title: String(event.summary), memo: String(event.description || '').replace(/\[ZEPHYRUS:[^\]]+\]/g, '').trim(),
-    registrant: '캘린더', channel: '캘린더', calendarEvent: '팀:' + eventKey
+    registrant: '캘린더', channel: '캘린더', calendarEvent: '팀:' + eventKey, deferSort: true
   });
 }
 
@@ -1246,6 +1298,7 @@ function onCalendarChange_() {
       }
     }
     if (nextToken) props.setProperty('CALENDAR_SYNC_TOKEN', nextToken);
+    zNormalizeAndSortScheduleSheet_();
     zLog_('동기화', '', '캘린더', '성공', '팀 캘린더에서 시트 반영 완료');
   } finally {
     lock.releaseLock();
@@ -1330,6 +1383,7 @@ function handleEdit(event) {
         zSetSchedule_(row, ZEPHYRUS.col.updated, zNowText_());
       }
     }
+    zNormalizeAndSortScheduleSheet_();
   } catch (error) {
     zLog_('오류', '', '시트', '실패', 'handleEdit: ' + error);
   }
