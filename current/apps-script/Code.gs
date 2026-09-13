@@ -869,6 +869,12 @@ function zNotifySchedule_(schedule, title, skipTelegramId) {
   return { sent: sent, failed: failed };
 }
 
+function zAlarmResult_(notification, hasDirectReply) {
+  if (notification && notification.failed && notification.failed.length) return ZEPHYRUS.alarm.failed;
+  if (notification && notification.sent && notification.sent.length) return ZEPHYRUS.alarm.sent;
+  return hasDirectReply ? ZEPHYRUS.alarm.sent : '발송대상없음';
+}
+
 function zGenerateAuthCodes() {
   var sheet = zSheet_(ZEPHYRUS.sheet.members);
   var map = zHeaders_(sheet);
@@ -1111,7 +1117,8 @@ function zHandleTelegramMessage_(chatId, text, replyViaWebhook) {
     // The sender receives the clear "등록했습니다" reply below.  Do not also
     // send the notification copy to the same chat, which looked like a
     // duplicate response in Telegram.
-    zNotifySchedule_(schedule, '[새 일정]', chatId);
+    var notified = zNotifySchedule_(schedule, '[새 일정]', chatId);
+    zSetSchedule_(schedule.row, ZEPHYRUS.col.alarm, zAlarmResult_(notified, true));
     return reply('등록했습니다.\n' + zScheduleText_(schedule));
   }
   return reply("입력 예: 9/15 2시 삼겹살 먹는 날\n또는: 일정 2026-09-15 14:00 회의\n조회: '오늘' 입력");
@@ -1371,6 +1378,7 @@ function zApplyCalendarApiEvent_(event) {
   });
   if (zSettings_()['즉시알림'] !== 'N') {
     var notified = zNotifySchedule_(imported, '[캘린더 새 일정]');
+    zSetSchedule_(imported.row, ZEPHYRUS.col.alarm, zAlarmResult_(notified, false));
     zLog_('알림', imported.id, '텔레그램', notified.failed.length ? '일부 실패' : '성공',
       notified.sent.length ? notified.sent.join(', ') + '에게 발송' : '연결된 수신자가 없습니다.');
   }
@@ -1504,6 +1512,10 @@ function handleEdit(event) {
         schedule = zScheduleFromRow_(values, row, map);
       }
       if (!schedule.date || !schedule.title || schedule.status === ZEPHYRUS.status.deleted) continue;
+      // A new row stays a draft until the writer has set at least one target.
+      // This keeps the row in place and prevents an early Telegram message
+      // while the memo and recipients are still being entered.
+      if (!schedule.id && !schedule.targets) continue;
       if (!schedule.id) {
         zSetSchedule_(row, ZEPHYRUS.col.id, zId_());
         zSetSchedule_(row, ZEPHYRUS.col.registrant, schedule.registrant || '시트');
@@ -1512,7 +1524,10 @@ function handleEdit(event) {
         zSetSchedule_(row, ZEPHYRUS.col.alarm, schedule.alarm || ZEPHYRUS.alarm.pending);
         zSetSchedule_(row, ZEPHYRUS.col.updated, zNowText_());
         schedule = zScheduleFromRow_(sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0], row, map);
-        if (zSettings_()['즉시알림'] !== 'N') zNotifySchedule_(schedule, '[새 일정]');
+        if (zSettings_()['즉시알림'] !== 'N') {
+          var notified = zNotifySchedule_(schedule, '[새 일정]');
+          zSetSchedule_(schedule.row, ZEPHYRUS.col.alarm, zAlarmResult_(notified, false));
+        }
       } else {
         zSetSchedule_(row, ZEPHYRUS.col.updated, zNowText_());
       }
