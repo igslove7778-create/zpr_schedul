@@ -20,6 +20,7 @@ var ZEPHYRUS = {
   col: {
     date: '날짜',
     time: '시작시간',
+    endTime: '종료시간',
     title: '일정',
     memo: '메모',
     targets: '대상자',
@@ -239,7 +240,7 @@ function zEnsureSheet_(spreadsheet, name, headers) {
 function zPrepareSystem() {
   var ss = zSpreadsheet_();
   zEnsureSheet_(ss, ZEPHYRUS.sheet.schedule, [
-    ZEPHYRUS.col.date, ZEPHYRUS.col.time, ZEPHYRUS.col.title, ZEPHYRUS.col.memo,
+    ZEPHYRUS.col.date, ZEPHYRUS.col.time, ZEPHYRUS.col.endTime, ZEPHYRUS.col.title, ZEPHYRUS.col.memo,
     ZEPHYRUS.col.targets, ZEPHYRUS.col.alarm, ZEPHYRUS.col.id, ZEPHYRUS.col.registrant,
     ZEPHYRUS.col.channel, ZEPHYRUS.col.calendarEvent, ZEPHYRUS.col.updated,
     ZEPHYRUS.col.status, ZEPHYRUS.col.reminders
@@ -329,6 +330,7 @@ function zScheduleFromRow_(row, index, map, members) {
     row: index,
     date: zNormalizeDate_(value(ZEPHYRUS.col.date)),
     time: zNormalizeTime_(value(ZEPHYRUS.col.time)),
+    endTime: zNormalizeTime_(value(ZEPHYRUS.col.endTime)),
     title: String(value(ZEPHYRUS.col.title) || '').trim(),
     memo: String(value(ZEPHYRUS.col.memo) || '').trim(),
     // 대상자 칸에 이름을 쓰는 기존 방식과, 관리자용 사람별 체크칸을
@@ -533,6 +535,7 @@ function zAppendSchedule_(input) {
   var date = zDateObject_(input.date);
   row[map[ZEPHYRUS.col.date] - 1] = date || input.date;
   row[map[ZEPHYRUS.col.time] - 1] = input.time || '';
+  if (map[ZEPHYRUS.col.endTime]) row[map[ZEPHYRUS.col.endTime] - 1] = input.endTime || '';
   row[map[ZEPHYRUS.col.title] - 1] = input.title || '';
   row[map[ZEPHYRUS.col.memo] - 1] = input.memo || '';
   row[map[ZEPHYRUS.col.targets] - 1] = input.targets || '';
@@ -548,6 +551,7 @@ function zAppendSchedule_(input) {
   var number = sheet.getLastRow();
   sheet.getRange(number, map[ZEPHYRUS.col.date]).setNumberFormat('yyyy-mm-dd');
   sheet.getRange(number, map[ZEPHYRUS.col.time]).setNumberFormat('@');
+  if (map[ZEPHYRUS.col.endTime]) sheet.getRange(number, map[ZEPHYRUS.col.endTime]).setNumberFormat('@');
   zWriteScheduleMemberChecks_(number, input.targets || input.registrant || '');
   if (!input.deferSort) zNormalizeAndSortScheduleSheet_();
   return zFindScheduleById_(id);
@@ -572,7 +576,8 @@ function zRecipients_(schedule) {
 }
 
 function zScheduleText_(schedule) {
-  return '[' + schedule.date + (schedule.time ? ' ' + schedule.time : ' 종일') + '] ' + schedule.title + (schedule.memo ? '\n메모: ' + schedule.memo : '');
+  var time = schedule.time ? ' ' + schedule.time + (schedule.endTime ? '–' + schedule.endTime : '') : ' 종일';
+  return '[' + schedule.date + time + '] ' + schedule.title + (schedule.memo ? '\n메모: ' + schedule.memo : '');
 }
 
 function zMemberCalendarSyncEnabled_() {
@@ -648,6 +653,7 @@ function zApplyMemberCalendarApiEvent_(member, event) {
   if (!date || !event.summary) return;
   var ymd = Utilities.formatDate(date, ZEPHYRUS.kst, 'yyyy-MM-dd');
   var time = zApiTime_(event);
+  var endTime = zApiEndTime_(event);
   var eventId = String(event.id || event.iCalUID || '');
 
   if (schedule) {
@@ -657,6 +663,7 @@ function zApplyMemberCalendarApiEvent_(member, event) {
     if (schedule.registrant === member.name || schedule.channel === '개인캘린더') {
       zSetSchedule_(schedule.row, ZEPHYRUS.col.date, date);
       zSetSchedule_(schedule.row, ZEPHYRUS.col.time, time);
+      zSetSchedule_(schedule.row, ZEPHYRUS.col.endTime, endTime);
       zSetSchedule_(schedule.row, ZEPHYRUS.col.title, String(event.summary));
       zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
     }
@@ -671,6 +678,7 @@ function zApplyMemberCalendarApiEvent_(member, event) {
   zAppendSchedule_({
     date: ymd,
     time: time,
+    endTime: endTime,
     title: String(event.summary),
     memo: String(event.description || '').replace(/\[(?:ZEPHYRUS|일정ID):[^\]]+\]/g, '').trim(),
     targets: member.name,
@@ -1127,6 +1135,13 @@ function zEventTimes_(schedule) {
   if (!schedule.time) return { allDay: true, start: day, end: null };
   var parts = schedule.time.split(':').map(Number);
   var start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), parts[0], parts[1]);
+  if (schedule.endTime) {
+    var endParts = schedule.endTime.split(':').map(Number);
+    var enteredEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), endParts[0], endParts[1]);
+    // An end before the start is an overnight schedule.
+    if (enteredEnd.getTime() <= start.getTime()) enteredEnd = new Date(enteredEnd.getTime() + 86400000);
+    return { allDay: false, start: start, end: enteredEnd };
+  }
   var minutes = Number(zSettings_()['기본일정길이분'] || 60) || 60;
   return { allDay: false, start: start, end: new Date(start.getTime() + minutes * 60000) };
 }
@@ -1260,6 +1275,11 @@ function zApiTime_(event) {
   return Utilities.formatDate(new Date(event.start.dateTime), ZEPHYRUS.kst, 'HH:mm');
 }
 
+function zApiEndTime_(event) {
+  if (!event.end || !event.end.dateTime) return '';
+  return Utilities.formatDate(new Date(event.end.dateTime), ZEPHYRUS.kst, 'HH:mm');
+}
+
 function zMarkerScheduleId_(description) {
   var match = String(description || '').match(/\[(?:ZEPHYRUS|일정ID):([^\]]+)\]/);
   return match ? match[1] : '';
@@ -1281,10 +1301,12 @@ function zApplyCalendarApiEvent_(event) {
   if (!date || !event.summary) return;
   var ymd = Utilities.formatDate(date, ZEPHYRUS.kst, 'yyyy-MM-dd');
   var time = zApiTime_(event);
+  var endTime = zApiEndTime_(event);
   var eventKey = String(event.id || event.iCalUID || '');
   if (schedule) {
     zSetSchedule_(schedule.row, ZEPHYRUS.col.date, date);
     zSetSchedule_(schedule.row, ZEPHYRUS.col.time, time);
+    zSetSchedule_(schedule.row, ZEPHYRUS.col.endTime, endTime);
     zSetSchedule_(schedule.row, ZEPHYRUS.col.title, String(event.summary));
     zSetSchedule_(schedule.row, ZEPHYRUS.col.calendarEvent, zCalendarCellWithTeamId_(schedule, eventKey));
     zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
@@ -1295,7 +1317,7 @@ function zApplyCalendarApiEvent_(event) {
   // receive the same Telegram record as a Telegram-created schedule.
   var creator = zMemberByEmail_(event.creator && event.creator.email || event.organizer && event.organizer.email);
   var imported = zAppendSchedule_({
-    date: ymd, time: time, title: String(event.summary), memo: String(event.description || '').replace(/\[ZEPHYRUS:[^\]]+\]/g, '').trim(),
+    date: ymd, time: time, endTime: endTime, title: String(event.summary), memo: String(event.description || '').replace(/\[ZEPHYRUS:[^\]]+\]/g, '').trim(),
     targets: creator ? creator.name : '', registrant: creator ? creator.name : '캘린더',
     channel: '캘린더', calendarEvent: '팀:' + eventKey, deferSort: true
   });
@@ -1314,6 +1336,7 @@ function onCalendarChange_() {
     var props = zProps_();
     var token = props.getProperty('CALENDAR_SYNC_TOKEN');
     var nextToken = null;
+    var hasCalendarChanges = false;
     // A sync token can expire.  Retry once with a bounded full scan in the
     // same lock; do not call this function recursively while holding it.
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -1329,7 +1352,9 @@ function onCalendarChange_() {
             options.timeMin = new Date(Date.now() - days * 86400000).toISOString();
           }
           var response = Calendar.Events.list(calendarId, options);
-          (response.items || []).forEach(zApplyCalendarApiEvent_);
+          var items = response.items || [];
+          if (items.length) hasCalendarChanges = true;
+          items.forEach(zApplyCalendarApiEvent_);
           pageToken = response.nextPageToken;
           if (response.nextSyncToken) nextToken = response.nextSyncToken;
         } while (pageToken);
@@ -1344,7 +1369,7 @@ function onCalendarChange_() {
       }
     }
     if (nextToken) props.setProperty('CALENDAR_SYNC_TOKEN', nextToken);
-    zNormalizeAndSortScheduleSheet_();
+    if (hasCalendarChanges) zNormalizeAndSortScheduleSheet_();
     zLog_('동기화', '', '캘린더', '성공', '팀 캘린더에서 시트 반영 완료');
   } finally {
     lock.releaseLock();
@@ -1422,6 +1447,12 @@ function handleEdit(event) {
       if (schedule.time && String(rawTime).trim() !== schedule.time) {
         sheet.getRange(row, map[ZEPHYRUS.col.time]).setValue(schedule.time).setNumberFormat('@');
         values[map[ZEPHYRUS.col.time] - 1] = schedule.time;
+        schedule = zScheduleFromRow_(values, row, map);
+      }
+      var rawEndTime = map[ZEPHYRUS.col.endTime] ? values[map[ZEPHYRUS.col.endTime] - 1] : '';
+      if (schedule.endTime && String(rawEndTime).trim() !== schedule.endTime) {
+        sheet.getRange(row, map[ZEPHYRUS.col.endTime]).setValue(schedule.endTime).setNumberFormat('@');
+        values[map[ZEPHYRUS.col.endTime] - 1] = schedule.endTime;
         schedule = zScheduleFromRow_(values, row, map);
       }
       if (!schedule.date || !schedule.title || schedule.status === ZEPHYRUS.status.deleted) continue;
