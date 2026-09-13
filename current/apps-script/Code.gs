@@ -361,6 +361,15 @@ function zTargetNames_(text) {
   return value.split(/[\s,]+/).filter(Boolean);
 }
 
+function zHasValidTargets_(targetText) {
+  var names = zTargetNames_(targetText);
+  if (names === '전부' || names === '전체') return true;
+  if (!names.length) return false;
+  var known = {};
+  zMembers_().forEach(function(member) { known[member.name] = true; });
+  return names.every(function(name) { return known[name]; });
+}
+
 function zTargetsFromRow_(row, map, members) {
   var base = String(map[ZEPHYRUS.col.targets] ? row[map[ZEPHYRUS.col.targets] - 1] : '').trim();
   if (base === '전부' || base === '전체') return base;
@@ -1512,10 +1521,10 @@ function handleEdit(event) {
         schedule = zScheduleFromRow_(values, row, map);
       }
       if (!schedule.date || !schedule.title || schedule.status === ZEPHYRUS.status.deleted) continue;
-      // A new row stays a draft until the writer has set at least one target.
+      // A new row stays a draft until the writer has set a valid target.
       // This keeps the row in place and prevents an early Telegram message
       // while the memo and recipients are still being entered.
-      if (!schedule.id && !schedule.targets) continue;
+      if (!schedule.id && !zHasValidTargets_(schedule.targets)) continue;
       if (!schedule.id) {
         zSetSchedule_(row, ZEPHYRUS.col.id, zId_());
         zSetSchedule_(row, ZEPHYRUS.col.registrant, schedule.registrant || '시트');
