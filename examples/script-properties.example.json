@@ -1,0 +1,8 @@
+{
+  "BOT_TOKEN": "Telegram BotFather token (do not commit)",
+  "TEAM_CAL_ID": "Google Calendar ID (do not commit)",
+  "WEB_APP_URL": "Apps Script deployment /exec URL",
+  "WEBHOOK_KEY": "random secret shared with Cloudflare Worker (do not commit)",
+  "TELEGRAM_WEBHOOK_URL": "Cloudflare Worker URL",
+  "SPREADSHEET_ID": "Required only for a standalone Apps Script project"
+}

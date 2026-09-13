@@ -1,56 +1,43 @@
-# 제피로스 통합 일정관리 시스템 (ZPR Schedule)
+# 제피로스 일정관리
 
-텔레그램 · 구글시트 · 구글캘린더 · 제피로스 웹사이트 일정 연동 시스템.
+텔레그램, Google Sheets, Google Calendar를 연결한 업무 일정관리 자동화입니다.
 
-## 현재 상태
+## 현재 운영 소스
 
-1단계 MVP 구현 완료 (기능명세서 v0.3 8장 기준). 구글시트 원장 + 텔레그램 등록·알림 + 대상자 체크 + 구성원 관리.
-
-| 구분 | 포함 기능 |
-|---|---|
-| 등록 | REG-01 시트 직접(담당자), REG-02 텔레그램, REG-05 등록자 확인, REG-06 수정·삭제(시트) |
-| 인식 | PAR-01~07 전체, PAR-05 확장 표기 일부(오늘·내일·모레, 6.6, yyyy-mm-dd, N시 반) |
-| 조회 | VIEW-01 시트, VIEW-03 텔레그램 알림, VIEW-06 텔레그램 조회 명령 |
-| 알림·권한 | AUTH-01~03, AUTH-05 변경·취소 재알림, AUTH-06 |
-| 관리 | ADM-01 구성원 열 자동 생성, ADM-02 인증코드 연결, ADM-03 로그, ADM-04 설정 |
-
-2단계(구글캘린더 양방향 동기화)와 3단계(웹사이트)는 미착수.
-
-## 폴더 구성
+현재 배포에 맞춘 공개용 소스는 `current/`에 있습니다.
 
 ```
-apps-script/   Google Apps Script 소스 (시트에 붙여 넣거나 clasp push)
-  Config.gs    시트명·헤더명·기본 설정
-  Parser.gs    텔레그램 입력 인식 (순수 함수, Node 테스트 대상)
-  SheetRepo.gs 시트 원장 읽기·쓰기, 로그
-  Auth.gs      대상자·열람 규칙 (6.1)
-  Telegram.gs  웹훅 수신, 계정 연결, 등록·조회 회신
-  Notify.gs    즉시 알림, 변경·취소 알림, 리마인드
-  Setup.gs     초기 설정, 메뉴, 트리거, 시트 편집 감지
-tests/         파서 테스트 (npm test)
-docs/          기능명세서, 설치가이드
+current/
+  apps-script/Code.gs          Google Apps Script 본문
+  apps-script/appsscript.json  Apps Script 설정
+  cloudflare-worker/worker.js  Telegram 즉시 응답용 Cloudflare Worker
+  docs/직원_사용설명서.md        직원용 텔레그램 사용법
+examples/
+  script-properties.example.json  비밀값을 제외한 설정 항목 예시
 ```
 
-## 시작하기
+루트의 `apps-script/`, `docs/`, `tests/`는 이전 개발 버전 기록으로 보존합니다. 새 배포나 복구에는 `current/` 파일을 사용합니다.
 
-[docs/설치가이드.md](docs/설치가이드.md) 를 따라 관리자 Gmail 계정에서 시트와 봇을 설정합니다.
+## 공개 저장소 보안 원칙
 
-```bash
-npm test
-```
+- 봇 토큰, 웹훅 키, 실제 시트 ID, 실제 캘린더 ID는 이 저장소에 넣지 않습니다.
+- 실제 값은 Google Apps Script **스크립트 속성**과 Cloudflare **Secret**에만 넣습니다.
+- `current/apps-script/Code.gs`에는 실제 운영 식별값이 없습니다.
 
-## 문서
+## 설치 요약
 
-- `docs/제피로스_통합일정관리_기능명세서_v0.3.docx` — 현행 기능명세서 (D-04 시트 담당자 편집, D-08 구성원별 캘린더, D-09 개인 Gmail, D-10 봇 1:1 확정)
-- `docs/제피로스_통합일정관리_기능명세서_v0.2.docx`, `_v0.1.docx` — 이전 버전
-- `docs/기능명세서_v0.3.txt` — v0.3 텍스트 추출본
-- `docs/설치가이드.md` — 설치·운영 절차
+1. 운영용 Google Sheets에서 **확장 프로그램 → Apps Script**를 엽니다.
+2. `current/apps-script/Code.gs`와 `appsscript.json`을 반영합니다.
+3. 스크립트 속성에 `BOT_TOKEN`, `TEAM_CAL_ID`, `WEB_APP_URL`, `WEBHOOK_KEY`를 넣습니다. 독립형 Apps Script라면 `SPREADSHEET_ID`도 넣습니다.
+4. `current/cloudflare-worker/worker.js`를 Cloudflare Worker에 배포합니다. Worker에는 `APPS_SCRIPT_URL`, `WEBHOOK_KEY`를 Secret으로 설정합니다.
+5. Apps Script 속성 `TELEGRAM_WEBHOOK_URL`에 Worker 주소를 넣고 `zRegisterWebhook`을 실행합니다.
 
-## 미결 사항 기본값 (설정 시트에서 변경 가능)
+직원별 업무 캘린더는 구성원 시트에 이름과 Gmail을 입력한 뒤, 최종 운영자 계정으로 `직원 전용 캘린더 만들기/공유`를 실행합니다. 실행한 계정이 새 업무 캘린더의 소유자가 됩니다.
 
-| 항목 | 기본값 |
-|---|---|
-| D-01 오전·오후 미표기 | 24시간제 그대로 (`오후해석시작시`=0) |
-| D-02 연도 생략 | 올해, 이미 지난 날짜면 내년 |
-| D-03 체크 없는 일정 | 알림은 등록자 본인, 열람은 전 구성원 |
-| D-05 알림 시점 | 등록 즉시 + 당일 08:00 + 30분 전 |
+## 사용
+
+- 일정 등록: `9/15 오후 2시 팀 회의`
+- 일정 등록: `일정 2026-09-15 14:00 팀 회의`
+- 오늘 조회: `오늘`
+
+텔레그램 조회와 등록 답장은 보통 수 초 안에 도착하며, 팀 캘린더 반영은 최대 약 1분 걸릴 수 있습니다.

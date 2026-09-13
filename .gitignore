@@ -2,3 +2,7 @@
 node_modules/
 *.pdf
 ~$*
+.env
+.env.*
+secrets.json
+script-properties.json
