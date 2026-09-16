@@ -114,6 +114,7 @@ function syncCalendar_() {
         return;
       }
       if (!schedule.date || !schedule.title) return;
+      schedule = zFinalizePersonalCalendarAlarm_(schedule);
       zSyncScheduleFiles_(schedule, null);
       var eventId = zUpsertCalendarEvent_(calendar, schedule);
       if (!eventId) return;
