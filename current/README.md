@@ -2,10 +2,21 @@
 
 이 폴더는 Google Apps Script와 Cloudflare Worker의 현재 운영 소스입니다.
 
-- `apps-script/Code.gs`를 Google Sheets에 연결된 Apps Script 프로젝트에 붙여 넣습니다.
-- `apps-script/appsscript.json`은 프로젝트 설정입니다.
-- `cloudflare-worker/worker.js`는 Telegram 웹훅을 Apps Script로 안전하게 전달합니다.
-- 실제 운영값(계정, 캘린더 ID, 토큰 등)은 소스 코드에 새로 넣지 말고 Script Properties/Secret에서 관리합니다.
+## Apps Script 소스
+
+최신 Apps Script 전체 소스는 `apps-script/` 아래의 여러 `.gs` 파일로 나눠 저장했습니다.
+
+- `Code.gs`
+- `Zephyrus_02.gs` ~ `Zephyrus_15.gs`
+- `appsscript.json`
+
+Google Apps Script에서는 같은 프로젝트 안의 여러 `.gs` 파일이 하나의 전역 코드처럼 동작합니다. **한 파일만 복사하면 안 되고, 위 `.gs` 파일 전체가 현재 운영 코드입니다.**
+
+GitHub 연동의 파일 크기 제한 때문에 기존 단일 `Code.gs`를 함수 경계에서만 안전하게 분할했으며, 기능 구조 자체를 분리하거나 변경한 것은 아닙니다.
+
+`cloudflare-worker/worker.js`는 Telegram 웹훅을 Apps Script로 안전하게 전달합니다.
+
+실제 운영값(계정, 캘린더 ID, 토큰 등)은 소스 코드에 새로 넣지 말고 Script Properties/Secret에서 관리합니다.
 
 ## 2026-09-17 운영 기준 변경
 
