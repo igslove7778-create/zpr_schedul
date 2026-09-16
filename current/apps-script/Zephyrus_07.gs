@@ -238,6 +238,8 @@ function zPullOneMemberCalendar_(member) {
 }
 
 function zPullMemberCalendars_() {
+  // 사용자가 시트를 연속 편집 중이면 캘린더의 예전 값이 시트를 덮지 않게 다음 주기로 미룬다.
+  if (zActiveScheduleEditCount_() > 0) return;
   zMembers_().forEach(function(member) {
     if (!member.calendarId) return;
     try { zPullOneMemberCalendar_(member); }
