@@ -138,6 +138,24 @@ function zImmediateCalendarSyncForNewSchedule_(schedule) {
   }
 }
 
+
+// 여러 시트 편집 트리거가 동시에 캘린더를 덮어쓰지 않게 직렬화한다.
+// 잠금을 얻은 뒤 일정ID로 최신 행을 다시 읽으므로, 먼저 시작한 오래된 편집이
+// 나중 편집 내용을 마지막에 덮어쓰는 것을 막는다.
+function zImmediateCalendarSyncLocked_(schedule) {
+  if (!schedule || !schedule.id) return { ok: false, detail: '일정ID가 없습니다.', schedule: schedule };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return { ok: false, detail: '다른 동기화 작업이 진행 중입니다. 1분 동기화가 이어서 반영합니다.', schedule: schedule };
+  }
+  try {
+    var latest = zFindScheduleById_(schedule.id) || schedule;
+    return zImmediateCalendarSyncForNewSchedule_(latest);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function zSyncScheduleToMemberCalendars_(schedule) {
   var recipients = zScheduleCalendarRecipients_(schedule);
   var intended = {};
