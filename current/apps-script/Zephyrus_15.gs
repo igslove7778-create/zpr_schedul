@@ -1,4 +1,71 @@
+function zActiveScheduleEditCount_() {
+  var props = zProps_();
+  var count = Number(props.getProperty('ACTIVE_SCHEDULE_EDITS') || 0) || 0;
+  var lastAt = Number(props.getProperty('LAST_SCHEDULE_EDIT_AT') || 0) || 0;
+  // 비정상 종료로 숫자가 남아도 1분이 지나면 자동 복구한다.
+  if (count > 0 && lastAt && Date.now() - lastAt > 60000) {
+    props.setProperty('ACTIVE_SCHEDULE_EDITS', '0');
+    return 0;
+  }
+  return count;
+}
+
+function zBeginScheduleEdit_() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(5000);
+  try {
+    var props = zProps_();
+    var count = zActiveScheduleEditCount_();
+    var token = Utilities.getUuid();
+    props.setProperties({
+      ACTIVE_SCHEDULE_EDITS: String(count + 1),
+      LAST_SCHEDULE_EDIT_TOKEN: token,
+      LAST_SCHEDULE_EDIT_AT: String(Date.now())
+    });
+    return token;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function zEndScheduleEdit_(token) {
+  var lock = LockService.getDocumentLock();
+  var latestToken = '';
+  var remaining = 0;
+  lock.waitLock(5000);
+  try {
+    var props = zProps_();
+    remaining = Math.max(0, zActiveScheduleEditCount_() - 1);
+    props.setProperty('ACTIVE_SCHEDULE_EDITS', String(remaining));
+    props.setProperty('LAST_SCHEDULE_EDIT_AT', String(Date.now()));
+    latestToken = String(props.getProperty('LAST_SCHEDULE_EDIT_TOKEN') || token || '');
+  } finally {
+    lock.releaseLock();
+  }
+
+  // 다른 편집 실행이 아직 작업 중이면 마지막 실행이 끝날 때 정렬한다.
+  if (remaining > 0) return false;
+
+  // 사람이 연속으로 3~4칸을 빠르게 고칠 때는 잠깐 기다렸다가
+  // 추가 편집이 없을 때만 한 번 정렬한다. 이 동안 행 번호가 움직이지 않는다.
+  Utilities.sleep(1200);
+
+  lock = LockService.getDocumentLock();
+  lock.waitLock(5000);
+  try {
+    var props2 = zProps_();
+    if (zActiveScheduleEditCount_() > 0) return false;
+    if (String(props2.getProperty('LAST_SCHEDULE_EDIT_TOKEN') || '') !== latestToken) return false;
+    SpreadsheetApp.flush();
+    zNormalizeAndSortScheduleSheet_(true);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function handleEdit(event) {
+  var editToken = '';
   try {
     if (!event || !event.range) return;
     var sheet = event.range.getSheet();
@@ -7,10 +74,9 @@ function handleEdit(event) {
       return;
     }
     if (sheet.getName() !== ZEPHYRUS.sheet.schedule || event.range.getRow() < 2) return;
+    editToken = zBeginScheduleEdit_();
     var map = zHeaders_(sheet);
     var members = zMembers_();
-    var shouldSort = false;
-    var singleRowEdit = event.range.getNumRows() === 1;
     for (var row = event.range.getRow(); row < event.range.getRow() + event.range.getNumRows(); row++) {
       var values = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
       // 대상자(F열)와 사람별 체크칸을 같은 값으로 유지한다.
@@ -67,29 +133,25 @@ function handleEdit(event) {
         schedule = zFindScheduleById_(schedule.id) || schedule;
         zSaveScheduleDeleteBackup_(schedule);
       }
-      // 완성된 한 행 편집은 캘린더 API보다 먼저 즉시 정렬한다.
-      // Google Calendar 처리 지연 때문에 시트 정렬까지 늦어지는 것을 막는다.
-      if (singleRowEdit) {
-        SpreadsheetApp.flush();
-        zNormalizeAndSortScheduleSheet_();
-        schedule = zFindScheduleById_(schedule.id) || schedule;
-      } else {
-        // 여러 행 붙여넣기/일괄편집은 행 번호가 중간에 움직이지 않도록
-        // 전체 처리 후 한 번만 정렬한다.
-        shouldSort = true;
-      }
+      // 여기서는 행을 움직이지 않는다. 연속 수정이 모두 끝난 뒤
+      // zEndScheduleEdit_()가 한 번만 정렬하므로 다른 편집 트리거의 행 번호가 안전하다.
+      SpreadsheetApp.flush();
 
       // 시트 입력/수정도 텔레그램과 같은 가벼운 즉시반영 경로를 사용한다.
       // 정렬이 끝난 뒤 고유 일정ID로 새 행 위치를 다시 찾았으므로,
       // 캘린더 작업이 늦어도 사용자가 보는 시트는 먼저 정리된다.
-      var immediateResult = zImmediateCalendarSyncForNewSchedule_(schedule);
+      var immediateResult = zImmediateCalendarSyncLocked_(schedule);
       if (immediateResult && immediateResult.schedule) {
         schedule = immediateResult.schedule;
       }
     }
-    if (shouldSort) zNormalizeAndSortScheduleSheet_();
   } catch (error) {
     zLog_('오류', '', '시트', '실패', 'handleEdit: ' + error);
+  } finally {
+    if (editToken) {
+      try { zEndScheduleEdit_(editToken); }
+      catch (finishError) { zLog_('오류', '', '시트', '건너뜀', '연속편집 정렬: ' + finishError); }
+    }
   }
 }
 
@@ -142,4 +204,3 @@ function zShowStatus() {
   });
   zNotice_(lines.join('\n'));
 }
-
