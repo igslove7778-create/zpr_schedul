@@ -76,6 +76,9 @@ function zApplyCalendarApiEvent_(event) {
 }
 
 function onCalendarChange_() {
+  // 시트 편집 중에는 역동기화를 잠시 미룬다. sync token을 읽기 전에 빠지므로
+  // 캘린더 변경분을 잃지 않고 다음 실행에서 그대로 처리한다.
+  if (zActiveScheduleEditCount_() > 0) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) return;
   try {
