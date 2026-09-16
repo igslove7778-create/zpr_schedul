@@ -62,6 +62,70 @@ function zDeleteOrphanedMarkedEvent_(calendarId, event, scheduleId, channel) {
   }
 }
 
+// Google Calendar의 증분 동기화에서는 예전 이벤트의 cancelled 항목과
+// 새로 교체된 정상 이벤트가 같은 묶음에 함께 올 수 있다.  cancelled 한 건만
+// 보고 중앙 일정을 삭제하면 빠른 연속 수정 중 정상 일정이 삭제로 굳을 수 있다.
+function zFindLiveMarkedCalendarEvent_(calendarId, scheduleId, excludeEventId) {
+  if (!calendarId || !scheduleId || typeof Calendar === 'undefined' || !Calendar.Events) return null;
+  try {
+    var response = Calendar.Events.list(calendarId, {
+      q: String(scheduleId),
+      singleEvents: true,
+      showDeleted: false,
+      maxResults: 100
+    });
+    var excluded = String(excludeEventId || '');
+    return (response.items || []).filter(function(item) {
+      return item && item.status !== 'cancelled' && String(item.id || '') !== excluded &&
+        zMarkerScheduleId_(item.description) === String(scheduleId);
+    })[0] || null;
+  } catch (error) {
+    zLog_('오류', scheduleId, '캘린더', '건너뜀', '취소 이벤트 교체본 확인 실패: ' + error);
+    return null;
+  }
+}
+
+function zHandleCancelledCalendarSchedule_(calendarId, schedule, calendarKey, event, canDeleteSource, channel) {
+  if (!schedule) return false;
+  var cancelledId = String(event && (event.id || event.iCalUID) || '');
+  var live = zFindLiveMarkedCalendarEvent_(calendarId, schedule.id, cancelledId);
+
+  // 같은 일정ID의 살아 있는 교체 이벤트가 있으면 "삭제"가 아니라 교체다.
+  // 최신 이벤트 ID만 다시 연결하고 중앙 일정은 그대로 살린다.
+  if (live) {
+    if (calendarKey) {
+      zSetSchedule_(
+        schedule.row,
+        ZEPHYRUS.col.calendarEvent,
+        zCalendarCellWithId_(schedule, calendarKey, String(live.id || live.iCalUID || ''))
+      );
+    }
+    return false;
+  }
+
+  // 수신자용 복사본이 지워진 것이라면 중앙 일정까지 삭제하지 않는다.
+  if (calendarKey) {
+    zSetSchedule_(schedule.row, ZEPHYRUS.col.calendarEvent, zCalendarCellWithId_(schedule, calendarKey, ''));
+  }
+  if (!canDeleteSource) return false;
+
+  zSetSchedule_(schedule.row, ZEPHYRUS.col.status, ZEPHYRUS.status.deleted);
+  zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
+  zLog_('동기화', schedule.id, channel || '캘린더', '삭제', '실제 삭제 확인 후 일정 삭제 처리');
+  return true;
+}
+
+function zFinalizePersonalCalendarAlarm_(schedule) {
+  if (!schedule || schedule.channel !== '개인캘린더' || schedule.alarm !== ZEPHYRUS.alarm.pending) return schedule;
+  if (zSettings_()['즉시알림'] === 'N') {
+    zSetSchedule_(schedule.row, ZEPHYRUS.col.alarm, '발송대상없음');
+    return zFindScheduleById_(schedule.id) || schedule;
+  }
+  var notified = zNotifySchedule_(schedule, '[개인캘린더 새 일정]');
+  zSetSchedule_(schedule.row, ZEPHYRUS.col.alarm, zAlarmResult_(notified, false));
+  return zFindScheduleById_(schedule.id) || schedule;
+}
+
 function zApplyMemberCalendarApiEvent_(member, event) {
   // Company notices are one-way delivery items, not work schedules.  Ignore
   // their marker while polling personal calendars so they never create a
@@ -73,9 +137,15 @@ function zApplyMemberCalendarApiEvent_(member, event) {
   if (!schedule && !scheduleId) schedule = zFindScheduleByCalendarEvent_(String(event.id || event.iCalUID || ''));
 
   if (event.status === 'cancelled') {
-    if (schedule && schedule.registrant === member.name) {
-      zSetSchedule_(schedule.row, ZEPHYRUS.col.status, ZEPHYRUS.status.deleted);
-      zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
+    if (schedule) {
+      zHandleCancelledCalendarSchedule_(
+        member.calendarId,
+        schedule,
+        key,
+        event,
+        schedule.registrant === member.name,
+        '개인캘린더'
+      );
     }
     return;
   }
@@ -109,13 +179,15 @@ function zApplyMemberCalendarApiEvent_(member, event) {
     }
     if (zCalendarEventId_(schedule, key) !== eventId) {
       zSetSchedule_(schedule.row, ZEPHYRUS.col.calendarEvent, zCalendarCellWithId_(schedule, key, eventId));
+      schedule = zFindScheduleById_(schedule.id) || schedule;
     }
+    zFinalizePersonalCalendarAlarm_(schedule);
     return;
   }
 
   // A new event entered directly in the employee's dedicated calendar is a
   // new private work schedule.  The next push creates its manager-team copy.
-  zAppendSchedule_({
+  var imported = zAppendSchedule_({
     date: ymd,
     time: time,
     endTime: endTime,
@@ -126,6 +198,7 @@ function zApplyMemberCalendarApiEvent_(member, event) {
     channel: '개인캘린더',
     calendarEvent: key + ':' + eventId
   });
+  zFinalizePersonalCalendarAlarm_(imported);
 }
 
 function zPullOneMemberCalendar_(member) {
