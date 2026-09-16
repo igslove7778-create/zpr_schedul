@@ -15,7 +15,10 @@ function zSetScheduleLocation_(rowNumber, value) {
 // Keep dates as real date values, but display them in the familiar Korean
 // format.  Sorting the complete row range keeps every schedule's notes,
 // targets, IDs and check marks together.
-function zNormalizeAndSortScheduleSheet_() {
+function zNormalizeAndSortScheduleSheet_(force) {
+  // 연속 편집 중에는 다른 트리거가 행을 움직이지 못하게 한다.
+  // 마지막 편집이 끝난 뒤 zEndScheduleEdit_()가 force=true로 딱 한 번 정렬한다.
+  if (!force && zActiveScheduleEditCount_() > 0) return 0;
   var sheet = zSheet_(ZEPHYRUS.sheet.schedule);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
@@ -78,7 +81,7 @@ function zNormalizeAndSortScheduleSheet_() {
 }
 
 function zNormalizeAndSortSchedules() {
-  var count = zNormalizeAndSortScheduleSheet_();
+  var count = zNormalizeAndSortScheduleSheet_(true);
   zNotice_(count + '개 날짜를 통일하고 일정표를 날짜순으로 정렬했습니다.');
 }
 
