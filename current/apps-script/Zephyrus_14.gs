@@ -8,8 +8,14 @@ function zApplyCalendarApiEvent_(event) {
   if (!schedule && !scheduleId && event.iCalUID) schedule = zFindScheduleByCalendarEvent_(String(event.iCalUID));
   if (event.status === 'cancelled') {
     if (schedule) {
-      zSetSchedule_(schedule.row, ZEPHYRUS.col.status, ZEPHYRUS.status.deleted);
-      zSetSchedule_(schedule.row, ZEPHYRUS.col.updated, zNowText_());
+      zHandleCancelledCalendarSchedule_(
+        zTeamCalendarId_(),
+        schedule,
+        '팀',
+        event,
+        true,
+        '공용캘린더'
+      );
     }
     return;
   }
